@@ -1,0 +1,983 @@
+create view db_ims.vw_userinfo as 
+select 
+u.user_id,
+u.username,
+ea.email_address,
+db_ims.get_salted_password(u.username,u.password) as userpassword,
+db_ims.fxn_mask_password(u.password)  as masked_password
+from db_ims.users u
+inner join db_ims.email_address ea 
+on u.user_id = ea.user_id 
+
+
+create view db_ims.vw_db_connection_details_complete as 
+
+select
+dbcd.db_con_string_id,
+dbcd.connection_name, 
+case when dbcd.host_ip = '127.0.0.1' then 'localhost'
+else dbcd.host_ip end as server,
+dbcd.port,
+dbcd.sql_driver as driver,
+dbcd.db_platform as paltform_val,
+gv.description as platform_desc,
+dbcd.db_username as admin_username,
+dbcd.db_password as admin_password,
+dbcd.oracle_db,
+u.user_id,
+u.username,
+ea.email_address
+from db_ims.db_connection_details dbcd
+inner join db_ims.users u on u.user_id = dbcd.user_id 
+inner join db_ims.email_address ea on ea.user_id = u.user_id
+left join (select genval , description from db_ims.generic_value where category = 'Platform') gv
+on dbcd.db_platform = gv.genval
+
+
+
+create view db_ims.vw_db_connection_details_temporary as 
+select 
+dcdt.con_id_no_temp,
+case when dcdt.host_ip = '127.0.0.1' then 'localhost'
+else dcdt.host_ip end as server,
+dcdt.port,
+dcdt.db_platform as paltform_val,
+gv.description as platform_desc,
+dcdt.db_username as admin_username,
+dcdt.db_password as admin_password,
+dcdt.con_status as connect_stat_val,
+gv2.description as connect_stat_desc,
+dcdt.oracle_db,
+u.user_id,
+u.username,
+ea.email_address
+from db_ims.db_connection_details_temp dcdt
+inner join db_ims.users u on u.user_id = dcdt.user_id 
+inner join db_ims.email_address ea on ea.user_id = u.user_id
+left join (select genval , description from db_ims.generic_value where category = 'Platform') gv
+on dcdt.db_platform = gv.genval
+left join (select genval , description from db_ims.generic_value where category = 'ConStatus') gv2
+on dcdt.con_status = gv2.genval
+
+
+
+create view db_ims.vw_table_details as
+ 
+ select
+ concat(x.TABLE_SCHEMA, '.' , x.TABLE_NAME) as tname,
+ x.column_list,
+ x.no_of_rows
+ from (
+ select c.TABLE_SCHEMA, c.TABLE_NAME, 
+ concat('(', group_concat(c.column_name  ORDER by c.ORDINAL_POSITION SEPARATOR ' , ') ,')') as column_list,
+ count(1) as no_of_rows
+ from information_schema.`COLUMNS` c inner join 
+ information_schema.TABLES t on t.TABLE_SCHEMA = c.TABLE_SCHEMA  and t.TABLE_NAME = c.TABLE_NAME
+ where c.EXTRA <> 'auto_increment'
+ and t.TABLE_TYPE = 'BASE TABLE' and t.TABLE_SCHEMA = 'db_ims'
+ group by  TABLE_SCHEMA, TABLE_NAME
+ ) x
+ 
+ 
+ ## Change View 05/19/2022
+create view db_ims.vw_uptime_check as
+
+with
+db_stat AS (
+select 
+ROW_NUMBER() OVER (PARTITION by db_con_string_id order by last_check_time) as row_id, 
+db_con_string_id, 
+db_status, last_check_time from db_ims.db_status
+), 
+db_stat_agg as (
+	select a.db_con_string_id, a.db_status, a.last_check_time from db_stat a 
+	join (select max(row_id) as row_id, db_con_string_id from db_stat group by db_con_string_id ) b
+	on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id
+),
+ul_chk AS (select u.db_con_string_id, u.last_db_uptime, u.uptime_timestamp, um.current_cycle
+from db_ims.db_uptime_logs u 
+join (select
+db_con_string_id,
+max(uptime_check) as current_cycle
+from db_ims.db_uptime_logs
+where uptime_status = 'A'
+group by db_con_string_id ) um
+on u.db_con_string_id = um.db_con_string_id 
+and u.uptime_check = um.current_cycle and u.uptime_status = 'A'),
+ul_agg AS (
+select 
+dsa.db_con_string_id,
+dsa.db_status,
+case when dsa.db_status = 'ONLINE' then ulc.last_db_uptime else null end as db_uptime,
+case when dsa.db_status = 'ONLINE' then dsa.last_check_time else null end as last_check_time,
+case when dsa.db_status = 'ONLINE' then round(time_to_sec(TIMEdIFF(dsa.last_check_time, ulc.last_db_uptime))/3600,0) 
+else round(time_to_sec(TIMEdIFF(ulc.uptime_timestamp, ulc.last_db_uptime))/3600,0)  end as age_hours
+from db_stat_agg dsa left join ul_chk ulc on dsa.db_con_string_id = ulc.db_con_string_id
+)
+
+select
+dcd.db_con_string_id,
+dcd.connection_name,
+case when dcd.host_ip = '127.0.0.1' then 'localhost'
+else dcd.host_ip end as server,
+dcd.port,
+dcd.db_username as admin_user,
+db_ims.fxn_mask_password(db_password) as admin_password,
+dcd.db_platform as paltform_val,
+gv.description as platform_desc,
+ul.db_status,
+ul.db_uptime,
+ul.last_check_time,
+round(ul.age_hours/ 24) as day_uptime,
+mod(ul.age_hours,24) as hours_uptime,
+u.user_id
+from db_ims.db_connection_details dcd
+inner join db_ims.users u on u.user_id = dcd.user_id 
+inner join db_ims.email_address ea on ea.user_id = u.user_id
+left join (select genval , description from db_ims.generic_value where category = 'Platform') gv on dcd.db_platform = gv.genval
+left join ul_agg ul on ul.db_con_string_id = dcd.db_con_string_id 
+
+ 
+ 
+ 
+
+create view db_ims.vw_sql_connection_details as
+
+with
+connection_log AS (
+select row_number() over (partition by db_con_string_id order by last_check_time asc) as row_id, db_con_string_id,
+max_connection_cnt, last_check_time from db_ims.db_connection_log
+), current_con as (
+select a.db_con_string_id, max_connection_cnt from connection_log a join (select db_con_string_id, max(row_id) as row_id from connection_log group by db_con_string_id) b
+on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id
+), nocon as (
+select db_con_string_id, sum(number_of_connections) as ncon from db_ims.sql_breakdown_of_connections group by db_con_string_id 
+), nses as (
+select db_con_string_id, count(distinct session_id) as active from db_ims.sql_active_sessions group by db_con_string_id 
+)
+
+
+select a.db_con_string_id, max_connection_cnt, ncon, active from current_con a
+left join nocon b on a.db_con_string_id = b.db_con_string_id
+left join nses c on a.db_con_string_id = c.db_con_string_id
+
+
+create view db_ims.vw_sql_backup_growth_rate_six_months as 
+with recursive cte_months (n, x_year, x_month) as (
+	select 0, year(CURDATE() - INTERVAL 0 MONTH), month(CURDATE() - INTERVAL 0 MONTH)
+	union all
+	select n + 1, year(CURDATE() - INTERVAL n + 1 MONTH), month(CURDATE()- INTERVAL n + 1 MONTH) from cte_months where n < 5
+)
+
+
+select
+db_con_string_id,
+concat(growth_year, '-', concat(repeat('0',2-length(growth_month)),growth_month)) as monthly_growth,
+round(coalesce(avg(backup_size_gb),0) * 1000, 2) as normal_backup_mb,
+round(coalesce(avg(delta_backup_size_gb),0) * 1000, 2) as incremental_backup_mb
+from db_ims.sql_backup_growth_rate sbg join cte_months cte on sbg.growth_month = cte.x_month and sbg.growth_year = cte.x_year
+group by db_con_string_id, growth_year,growth_month
+
+
+
+create view db_ims.vw_sql_database_growth_rate_90_days as
+select
+db_con_string_id,
+growth_name, 
+round(coalesce(sum(time_taken_sec),0),2) as time_taken_sec,
+round(coalesce(avg(change_size_mb),0), 2) as change_size_mb
+from db_ims.sql_database_growth_rate
+where cast(end_time as date) between (CURDATE()- interval 90 day ) and (CURDATE())
+group by growth_name,db_con_string_id
+
+
+
+create view db_ims.vw_db_uptime_logs_graph as
+ with cte as (  
+ select
+ db_con_string_id,
+ case when uptime_status = 'A' then 1 else 0 end as uptime_logs,
+ DATE_FORMAT(uptime_timestamp ,'%Y-%m-%d-%H') as hourly_uptime
+ from db_ims.db_uptime_logs
+ 
+ union all
+ 
+ select db_con_string_id, case when db_status = 'ONLINE' then 1 else 0 end as uptime_logs, DATE_FORMAT(last_check_time ,'%Y-%m-%d-%H') as hourly_uptime  from db_ims.db_status
+ )
+ 
+ select
+ db_con_string_id,
+ min(uptime_logs) as uptime_logs,
+ STR_TO_DATE(hourly_uptime, '%Y-%m-%d-%H') as hourly_uptime
+ from cte 
+ where cast( STR_TO_DATE(hourly_uptime, '%Y-%m-%d-%H') as date) between (CURDATE() - interval 30 day) and (CURDATE())
+ group by db_con_string_id, hourly_uptime order by db_con_string_id, hourly_uptime asc
+ 
+ 
+ 
+create view db_ims.vw_db_status_check as
+
+with cte as (
+select
+db_con_string_id,
+db_status,
+count(1) as status_cnt,
+group_concat(db_name order by db_name desc separator ',') as db_grp_name
+from db_ims.sql_database_uptime_current_logs
+group by db_con_string_id, db_status), cte_online_stat as (
+select cte1.db_con_string_id, 
+coalesce(cte1.status_cnt,0) as online_cnt,
+coalesce(cte2.status_cnt,0) as offline_cnt,
+cte2.db_grp_name as offline_databases
+from 
+(select * from cte where db_status = 'ONLINE') cte1 left join 
+(select * from cte where db_status = 'OFFLINE') cte2 on cte1.db_con_string_id = cte2.db_con_string_id)
+
+select 
+a.db_con_string_id,
+concat(a.online_cnt, ' ONLINE Databases | ', a.offline_cnt, ' OFFLINE Databases') as db_status,
+ coalesce(offline_databases, '') as offline_db,
+concat('Agent Status : ', coalesce(b.sql_server_status, ''), ' | SERVER : ', coalesce(b.sql_server_instance, '')) as agent_status
+from cte_online_stat a join db_ims.sql_check_agent b on a.db_con_string_id = b.db_con_string_id
+
+
+create view db_ims.vw_job_status_history as
+
+select
+a.db_con_string_id,
+a.job_name,
+a.job_run_status,
+a.job_status,
+substring_index(group_concat(distinct concat(b.job_status, ':' ,b.job_run_time) order by b.job_run_time desc separator ','), ',', 5) as job_history_top_five 
+from db_ims.sql_job_status a
+left join db_ims.sql_job_history b on
+a.db_con_string_id = b.db_con_string_id and a.job_name = b.job_name 
+group by 
+a.db_con_string_id,
+a.job_name,
+a.job_run_status,
+b.job_status
+
+
+
+create view db_ims.vw_sql_server_memory_capacity as
+with cte as (
+select
+db_con_string_id,
+row_number() over (partition by db_con_string_id order by last_date_check asc) as row_id,
+volume_mount_point,
+file_system_type,
+total_size_mb,
+free_size_mb,
+case when is_compressed = 'Y' then 'Disk Compressed' else 'Disk is not compressed' end as is_compressed,
+case when supports_comparison = 'Y' then 'Supprots Comparison' else 'Does not Supprot Comparison' end as supports_comparison,
+last_date_check
+from db_ims.sql_memory_capacity), 
+cte_max as (
+	select db_con_string_id, max(row_id) as row_id from cte group by db_con_string_id
+)
+
+select
+c.db_con_string_id,
+volume_mount_point,
+file_system_type,
+total_size_mb,
+free_size_mb,
+round((total_size_mb - free_size_mb)/total_size_mb * 100,2) used_percentage,
+round(free_size_mb/total_size_mb * 100,2) free_percentage,
+concat(is_compressed, ';', supports_comparison) as disk_property,
+last_date_check
+from cte c join cte_max m on c.db_con_string_id = m.db_con_string_id
+and c.row_id = m.row_id
+
+
+create view db_ims.vw_sql_db_logs_cap as
+
+select 
+db_con_string_id, 
+database_name, 
+total_size_mb, 
+data_size_mb,
+data_used_size_mb,
+log_size_mb,
+log_used_size_mb 
+from db_ims.sql_database_and_logs_capacity
+
+create view db_ims.vw_sql_db_logs_cap_size_comp as
+select
+db_con_string_id, 
+database_name,
+total_size_mb,
+coalesce(round((data_used_size_mb + log_used_size_mb)/total_size_mb*100,2),0) as total_used_percentage,
+coalesce(round(data_used_size_mb/data_size_mb*100,2),0) as data_size_used_percentage,
+coalesce(round(log_used_size_mb/log_size_mb*100,2),0) as log_size_used_percentage
+from db_ims.sql_database_and_logs_capacity
+
+create view db_ims.vw_sql_backup_details as 
+
+select
+db_con_string_id, 
+database_name,
+full_back_up_date,
+full_back_up_size_MB,
+concat(round(back_up_age_hrs/24,0), ' days and ', mod(back_up_age_hrs,24), ' hours') as age,
+back_up_age_hrs
+from db_ims.sql_backup_details
+order by back_up_age_hrs desc
+
+
+create view db_ims.vw_pg_connection_details as
+
+with
+connection_log AS (
+select row_number() over (partition by db_con_string_id order by last_check_time asc) as row_id, db_con_string_id,
+max_connection,used_connection,reserve_normal, last_check_time from db_ims.pg_db_connection_log
+), current_con as (
+select a.db_con_string_id, a.max_connection, a.used_connection, a.reserve_normal from connection_log a join (select db_con_string_id, max(row_id) as row_id from connection_log group by db_con_string_id) b
+on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id
+)
+
+
+select db_con_string_id, max_connection, used_connection, reserve_normal as remaining_connection from current_con
+
+
+
+create view db_ims.vw_pg_longest_running_queries as
+
+with recursive cte(n) as (
+	select 1
+	union all 
+	select n+1 from cte where n < 3
+)
+
+select
+db_con_string_id, 
+process_id,
+user_name,
+query
+from (
+select
+db_con_string_id,
+row_number() over (partition by db_con_string_id order by run_time desc) as row_id,
+process_id,
+user_name,
+query
+from db_ims.pg_db_query_logs ) x join cte y on x.row_id = y.n
+
+create view db_ims.vw_pg_active_sessions as
+select
+db_con_string_id, 
+coalesce(user_name, 'UNKNOWN USER') as user_name,
+coalesce(client_address, 'UNKNOWN ADDRESS') as client_address,
+total_connections,
+coalesce(last_query, 'NO LAST QUERY') as last_query
+from db_ims.pg_db_session
+
+
+create view db_ims.vw_pg_cache_hit_ratio_and_memory as
+with cte as (
+select
+row_number() over (partition by db_con_string_id order by last_check_time asc) as row_id,
+db_con_string_id, 
+database_name, 
+cache_hit_ratio_index_percent, 
+cache_hit_ratio_table_percent,
+last_check_time 
+from db_ims.pg_cache_hit_ratio), cte_agg as (
+select max(row_id) as row_id, db_con_string_id from cte group by db_con_string_id
+),cte2 as (
+select
+row_number() over (partition by db_con_string_id order by last_check_time asc) as row_id,
+db_con_string_id, 
+database_name, 
+memory,
+creation_date
+from db_ims.pg_db_memory), cte2_agg as (
+select max(row_id) as row_id, db_con_string_id from cte2 group by db_con_string_id
+), cte3 as (
+select c1.db_con_string_id,
+database_name,
+memory,
+cast(creation_date as date) as creation_date
+from cte2 c1 join cte2_agg c2 on c1.db_con_string_id = c2.db_con_string_id and c1.row_id = c2.row_id
+group by c1.db_con_string_id)
+
+
+select
+c1.db_con_string_id,
+c1.database_name,
+cache_hit_ratio_index_percent, 
+cache_hit_ratio_table_percent,
+c3.memory,
+c3.creation_date
+from cte c1 join cte_agg c2 on c1.db_con_string_id = c2.db_con_string_id and c1.row_id = c2.row_id
+left join cte3 c3 on c1.db_con_string_id = c3.db_con_string_id and c1.database_name = c3.database_name
+
+## Change View 5/21/2022
+create view db_ims.vw_pg_tbl_index_sizes as
+
+select 
+db_con_string_id, 
+schema_owner, 
+round(sum(db_ims.fxn_convert_to_bytes(table_size))/1024/1024,2) as table_size_mb,  
+round(sum(db_ims.fxn_convert_to_bytes(index_size))/1024/1024,2) as index_size_mb
+from db_ims.pg_table_memory
+group by db_con_string_id, schema_owner
+
+
+create view db_ims.vw_pg_tbl_cache_hit_ratio_below_80 as
+select
+db_con_string_id,
+schema_owner,
+obj_name, 
+coalesce(cache_hit_ratio_percent,0) as table_cache_hit_ratio
+from db_ims.pg_cache_breakdown
+where obj_type = 'T' and cache_hit_ratio_percent < 80
+
+create view db_ims.vw_pg_idx_cache_hit_ratio_below_80 as
+select
+db_con_string_id,
+schema_owner,
+obj_name, 
+coalesce(cache_hit_ratio_percent,0) as index_cache_hit_ratio
+from db_ims.pg_cache_breakdown
+where obj_type = 'I' and cache_hit_ratio_percent < 80
+
+create view db_ims.vw_pg_vacuum_summary as
+select
+db_con_string_id,
+table_name,
+schema_owner,
+coalesce(coalesce(last_vacuum, last_autovacuum), 'No Vacuum Done') as last_vacuum,
+num_tups,
+dead_tups 
+from db_ims.pg_vacuum where dead_tups is not null and num_tups is not null
+
+
+create view db_ims.vw_pg_inherentance_map as
+select
+db_con_string_id,
+object_id,
+schema_name,
+parent_object_id,
+inheretance_map 
+from db_ims.pg_inheritance_map
+
+
+create view db_ims.check_sql_tables as 
+select 'db_ims.sql_job_history' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_job_history
+union all
+select 'db_ims.sql_job_status' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_job_status
+union all
+select 'db_ims.sql_check_agent' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_check_agent
+union all
+select 'db_ims.sql_memory_capacity' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_memory_capacity
+union all
+select 'db_ims.sql_database_and_logs_capacity' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_database_and_logs_capacity
+union all
+select 'db_ims.sql_database_growth_rate' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_database_growth_rate
+union all
+select 'db_ims.sql_backup_growth_rate' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_backup_growth_rate
+union all
+select 'db_ims.sql_backup_details' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_backup_details
+union all
+select 'db_ims.sql_breakdown_of_connections' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_breakdown_of_connections
+union all
+select 'db_ims.sql_active_sessions' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_active_sessions
+union all
+select 'db_ims.sql_sp_installed_table' as table_name, count(1) as cnt, max(last_date_check) as last_date_check from db_ims.sql_sp_installed_table
+union all
+select 'db_ims.db_connection_log' as table_name, count(1) as cnt, max(last_check_time) as last_date_check from db_ims.db_connection_log
+
+
+create view db_ims.chk_db_status_per_ten_mins as
+with cte as (
+select
+db_con_string_id,
+b.board_category,
+sum(response_time) as response_time,
+max(case when query_log_status = 'ERROR' then 0 else 1 end) as check_status,
+date_format(last_time_check, '%Y-%m-%d %H:00') + INTERVAL (MINUTE(last_time_check) - MINUTE(last_time_check) MOD 10) minute as last_check_per_10_min
+from db_ims.py_db_query_log_details a join 
+db_ims.generic_broad_category b on a.category = b.smaller_category
+group by date_format(last_time_check, '%Y-%m-%d %H:00') + INTERVAL (MINUTE(last_time_check) - MINUTE(last_time_check) MOD 10) minute, 
+db_con_string_id, b.board_category
+order by last_check_per_10_min asc, db_con_string_id desc), cte2 as (
+select
+db_con_string_id,
+min(case when db_status = 'ONLINE' then 1 else 0 end) as db_status,
+date_format(last_check_time, '%Y-%m-%d %H:00') + INTERVAL (MINUTE(last_check_time) - MINUTE(last_check_time) MOD 10) minute as last_check_per_10_min
+from db_ims.db_status
+group by date_format(last_check_time, '%Y-%m-%d %H:00') + INTERVAL (MINUTE(last_check_time) - MINUTE(last_check_time) MOD 10) minute, 
+db_con_string_id
+)
+
+select c1.db_con_string_id,board_category,response_time, 
+case 
+when check_status > coalesce(db_status,0) then check_status
+when check_status < coalesce(db_status,0) then coalesce(db_status,0)
+when check_status = coalesce(db_status,0) then check_status 
+end as final_check_status,
+check_status,
+coalesce(db_status,0),
+c1.last_check_per_10_min
+from cte c1 left join cte2 c2 on c1.db_con_string_id = c2.db_con_string_id and c1.last_check_per_10_min = c2.last_check_per_10_min
+
+
+create view db_ims.db_ims_job_summary as
+
+with cte as (
+select row_number() over (partition by db_con_string_id, category, sub_category order by last_time_check) as row_id,
+db_con_string_id,  category, sub_category, db_query, db_param, query_type, error_message, query_log_status, last_time_check 
+from db_ims.py_db_query_log_details
+), cte2 as (
+	select max(row_id) as row_id, db_con_string_id, category, sub_category from cte group by db_con_string_id, category, sub_category
+)
+
+select a.db_con_string_id,  
+a.category, 
+a.sub_category, 
+a.db_query, 
+a.db_param,
+a.query_type, 
+case when a.query_type = 'CON' then case when c.db_status = 'ONLINE' then null else a.error_message end else a.error_message end as error_message,
+case when a.query_type = 'CON' then case when c.db_status = 'ONLINE' then 'SUCCESS' else 'ERROR' end else a.query_log_status end as query_log_status,
+a.last_time_check
+from cte a join cte2 b on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id and 
+a.category = b.category and coalesce(a.sub_category, '') = coalesce(b.sub_category, '') left join db_ims.vw_uptime_check c on 
+c.db_con_string_id = a.db_con_string_id and a.query_type = 'CON'
+
+## Change View 5/19/2022
+create view db_ims.vw_db_invetory as
+select
+user_id, 
+connection_name,
+gv.description  as platform,
+db_ims.fx_get_db_version(db_platform, db_version) as db_version
+from db_ims.db_connection_details dcd join
+db_ims.generic_value gv  on dcd.db_platform = gv.genval and gv.category = 'Platform'
+
+## Change View 05/21/2022
+create view db_ims.vw_sql_job_summary as
+select
+vdcdc.user_id,  
+vdcdc.platform_desc,
+vdcdc.connection_name, 
+group_concat(case when a.category = 'uptime' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as uptime,
+group_concat(case when a.category = 'agent' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as agent,
+group_concat(case when a.category = 'backup' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as backup,
+group_concat(case when a.category = 'capacity' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as capacity,
+group_concat(case when a.category = 'connection' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as connections,
+group_concat(case when a.category = 'growth_rate' then concat(coalesce(sub_category, a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as growth_rate,
+group_concat(case when a.category = 'sp_check' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as maitenance
+from db_ims.db_ims_job_summary a
+join db_ims.vw_db_connection_details_complete vdcdc on vdcdc.db_con_string_id = a.db_con_string_id
+where vdcdc.paltform_val = 'MS'
+group by vdcdc.db_con_string_id
+
+## Change View 05/21/2022
+create view db_ims.vw_pg_job_summary as
+select
+vdcdc.user_id, 
+vdcdc.platform_desc,
+vdcdc.connection_name, 
+group_concat(case when a.category = 'uptime' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as uptime,
+group_concat(case when a.category = 'cache-hit-ratio' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as cache_hit_ratio,
+group_concat(case when a.category = 'memory' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as memory,
+group_concat(case when a.category = 'capacity' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as capacity,
+group_concat(case when a.category = 'connection' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as connections,
+group_concat(case when a.category = 'roles' then concat(coalesce(sub_category, a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as roles,
+group_concat(case when a.category = 'vacuum' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as maitenance
+from db_ims.db_ims_job_summary a
+join db_ims.vw_db_connection_details_complete vdcdc on vdcdc.db_con_string_id = a.db_con_string_id
+where vdcdc.paltform_val = 'PG'
+group by vdcdc.db_con_string_id
+
+## Add View 05/21/2022
+create view db_ims.vw_mysql_job_summary as
+select
+vdcdc.user_id,  
+vdcdc.platform_desc,
+vdcdc.connection_name,
+group_concat(case when a.category = 'uptime' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as uptime,
+group_concat(case when a.category = 'connection' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as db_connection,
+group_concat(case when a.category = 'capacity' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as db_capacity
+from db_ims.db_ims_job_summary a
+join db_ims.vw_db_connection_details_complete vdcdc on vdcdc.db_con_string_id = a.db_con_string_id
+where vdcdc.paltform_val = 'MY'
+group by vdcdc.db_con_string_id
+
+
+## Add View 05/21/2022
+create view db_ims.vw_oracle_job_summary as
+select
+vdcdc.user_id,  
+vdcdc.platform_desc,
+vdcdc.connection_name,
+group_concat(case when a.category = 'uptime' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as uptime,
+group_concat(case when a.category = 'availability' then concat(coalesce(sub_category,a.category), ' : ', query_log_status, '@' ,last_time_check)
+			else null end separator '; ') as availability
+from db_ims.db_ims_job_summary a
+join db_ims.vw_db_connection_details_complete vdcdc on vdcdc.db_con_string_id = a.db_con_string_id
+where vdcdc.paltform_val = 'OR'
+group by vdcdc.db_con_string_id
+
+create view db_ims.vw_monitoring_details as
+select 
+job_id,
+db_con_string_id,
+platform,
+job_no,
+board_category,
+category,
+sub_category,
+tsql_type,
+TSQL,
+sp_parameter, 
+description as installation_status,
+create_date,
+last_run,
+case 
+when occur_once = 'Y' then 'Execute Once'
+when occur_once = 'N' and week_daily = 'Y' and set_time is null then Concat(dm_chk, sched_freq)
+when occur_once = 'N' and week_daily = 'Y' and set_time is not null then Concat(dm_chk, time_chk)
+when occur_once = 'N' and week_daily = 'N'  and set_time is null then Concat('Scheduled Run [', monday_chk, tuesday_chk, wednesday_chk, thursday_chk, friday_chk, saturday_chk, sunday_chk, ' ] ' , sched_freq)
+when occur_once = 'N' and week_daily = 'N'  and set_time is not null then Concat('Scheduled Run [', monday_chk, tuesday_chk, wednesday_chk, thursday_chk, friday_chk, saturday_chk, sunday_chk, ' ] ' , time_chk)
+end as monitoring_details
+from (
+
+select
+job_id,
+db_con_string_id,
+platform,
+row_number() over (partition by db_con_string_id) as job_no,
+board_category,
+djc.category,
+sub_category,
+case when is_sp = 'Y' then 'PROC' else 'QRY' end as tsql_type,
+TSQL,
+sp_parameter, 
+installation_status,
+gv.description,
+create_date,
+last_run,
+occur_once,
+week_daily,
+set_time,
+case 
+	when frequency_hr = 0 and frequency_min = 0 and frequency_sec > 0 then
+		concat('Every ', cast(frequency_sec as varchar(5)), ' sec(s)')
+	when frequency_hr = 0 and frequency_min > 0 and frequency_sec = 0 then
+		concat('Every ', cast(frequency_min as varchar(5)), ' min(s)')
+	when frequency_hr > 0 and frequency_min = 0 and frequency_sec = 0 then
+		concat('Every ', cast(frequency_hr as varchar(5)), ' hr(s)')
+	when frequency_hr > 0 and frequency_min = 0 and frequency_sec > 0 then
+		concat('Every ', cast((frequency_hr + round((frequency_sec/3600),0)) as varchar(5)), ' hr(s)')
+	when frequency_hr > 0 and frequency_min > 0 and frequency_sec = 0 then
+		concat('Every ', cast((frequency_hr + round((frequency_min/60),0))  as varchar(5)), ' hr(s)')
+	when frequency_hr > 0 and frequency_min > 0 and frequency_sec > 0 then
+		concat('Every ', cast((frequency_hr +  round((frequency_min/60),0) + round((frequency_sec/3600),0)) as varchar(5)), ' hr(s)')
+	when frequency_hr = 0 and frequency_min > 0 and frequency_sec > 0 then
+		concat('Every ', cast((frequency_min + round((frequency_sec/3600),0)) as varchar(5)), ' hr(s)')
+end as sched_freq,
+case when week_daily = 'Y' then 'Daily Monitoring ' end as dm_chk,
+case when week_monday = 'Y' then ' MON' else '' end as monday_chk,
+case when week_tuesday = 'Y' then ' TUE' else '' end as tuesday_chk,
+case when week_wednesday = 'Y' then ' WED' else '' end as wednesday_chk,
+case when week_thursday = 'Y' then ' THU' else '' end as thursday_chk,
+case when week_friday = 'Y' then ' FRI' else '' end as friday_chk,
+case when week_saturday = 'Y' then ' SAT' else '' end as saturday_chk,
+case when week_sunday = 'Y' then ' SUN' else '' end as sunday_chk,
+case 
+when set_time is not null then  concat(' @ ', DATE_FORMAT(set_time, '%H:%i:%s'))
+when frequency_hr = 0 and frequency_min = 0 and frequency_sec = 0 and set_time is null then 'Execute Once'
+end as time_chk
+from db_ims.db_ims_job_configuration djc
+left join db_ims.generic_value gv on djc.installation_status = gv.genval and gv.category = 'CONFIG'
+where (platform in ('MS', 'MY', 'PG') and is_sp = 'Y') or (platform = 'OR' and is_sp = 'N')
+) x
+
+
+
+
+
+create view db_ims.vw_mysql_to_py_steps as
+select
+job_id,
+db_con_string_id,
+platform,
+case when platform = 'MS' then 
+	case 
+	when TSQL = 'pyodbc' and sp_parameter is null then 0
+	when TSQL = 'sp_dbims_check_installed_sp' and sp_parameter = 'check' then 1
+	when TSQL = 'sp_dbims_display_connection_details' and sp_parameter = 'max' then 2
+	when TSQL = 'sp_dbims_display_connection_details' and sp_parameter = 'breakdown' then 3
+	when TSQL = 'sp_dbims_display_connection_details' and sp_parameter = 'session' then 4
+	when TSQL = 'sp_dbims_extract_backup_info' and sp_parameter is null then 5
+	when TSQL = 'sp_dbims_extract_growth_rate' and sp_parameter = 'backup' then 6
+	when TSQL = 'sp_dbims_extract_growth_rate' and sp_parameter = 'data' then 7
+	when TSQL = 'sp_dbims_check_sql_agent_and_jobs' and sp_parameter = 'agent' then 8
+	when TSQL = 'sp_dbims_check_sql_agent_and_jobs' and sp_parameter = 'status' then 9
+	when TSQL = 'sp_dbims_check_sql_agent_and_jobs' and sp_parameter = 'history' then 10
+	when TSQL = 'sp_dbims_extract_log_and_data_info' and sp_parameter is null then 11
+	when TSQL = 'sp_dbims_extract_memory_capacity' and sp_parameter is null then 12
+	end
+	when platform = 'PG' then 
+		case 
+		when TSQL = 'pyodbc' and sp_parameter is null then 0
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'connect' then 1
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'session' then 2
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'query' then 3
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'cache' then 4
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'table-memory' then 5
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'vacuum' then 6
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'index-cache' then 7
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'table-cache' then 8
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'database-memory' then 9
+		when TSQL = 'sp_pg_db_operations' and sp_parameter = 'login' then 10
+		end
+	when platform = 'MY' then 
+		case 
+		when TSQL = 'pyodbc' and sp_parameter is null then 0
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'UPTIME' then 1
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'INNODB' then 2
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'DATABASE' then 3
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'TABLE' then 4
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'TABLE-INDEX' then 5
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'PROCESSLIST' then 6
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'CONNECTION' then 7
+		when TSQL = 'sp_extract_db_information' and sp_parameter = 'LARGEST' then 8
+		end
+	when platform = 'OR' then
+		case
+		when category = 'uptime' and sub_category = 'statistics' then 1
+		when category = 'availability' and sub_category = 'dbstatus' then 2
+		when category = 'capacity' and sub_category = 'connection' then 3
+		end
+end as py_step_id
+from db_ims.vw_monitoring_details
+
+
+
+## Change View 05/20/2022
+create view db_ims.vw_job_reference_tbl as
+with recursive staging_tbl as (
+select 
+min_job_id,
+job_id
+from
+(select job_id as min_job_id from db_ims.db_ims_job_configuration where TSQL = 'pyodbc' and platform <> 'OR') a cross join
+(select job_id from db_ims.db_ims_job_configuration where category = 'uptime' and platform <> 'OR') b
+
+union all
+
+select 
+min_job_id,
+job_id
+from
+(select job_id as min_job_id from db_ims.db_ims_job_configuration where platform = 'OR' and category = 'uptime' and job_no = 2) a cross join 
+(select job_id from db_ims.db_ims_job_configuration where platform = 'OR' and category = 'uptime') b
+)
+
+
+select
+distinct
+case when b.job_id is not null then b.min_job_id else a.job_id end as job_id,
+last_run,
+case
+when week_daily = 'Y' then 1
+when UPPER(DATE_FORMAT(now(), '%a')) = 'SUN' then 
+	case when week_sunday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'MON' then 
+	case when week_monday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'TUE' then 
+	case when week_tuesday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'WED' then 
+	case when week_wednesday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'THU' then 
+	case when week_thursday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'FRI' then 
+	case when week_friday = 'Y' then 1 else 0 end
+when UPPER(DATE_FORMAT(now(), '%a')) = 'SAT' then 
+	case when week_saturday = 'Y' then 1 else 0 end
+end as to_run_today,
+case
+when set_time is not null then set_time
+when frequency_hr > 0 or frequency_min > 0 or frequency_sec > 0 then
+	case
+	when frequency_hr > 0 then
+		DATE_ADD(last_run, interval frequency_hr hour)
+	when frequency_min > 0 then
+		DATE_ADD(last_run, interval frequency_min minute)
+	when frequency_sec > 0 then
+		DATE_ADD(last_run, interval frequency_min minute)
+	end
+else null
+end as next_run
+from db_ims.db_ims_job_configuration a left join
+staging_tbl b on a.job_id = b.job_id
+
+create view db_ims.vw_job_reference_tbl_filtered_view as
+
+select
+job_id, 
+last_run,
+next_run
+from db_ims.vw_job_reference_tbl
+where 
+to_run_today = 1 
+and next_run between
+now()
+and DATE_ADD(now(), interval 1 MINUTE)
+
+union all 
+
+select
+job_id, 
+last_run,
+next_run from db_ims.vw_job_reference_tbl
+where 
+to_run_today = 1 
+and next_run < now()
+
+union all 
+
+select
+job_id, 
+last_run,
+next_run from db_ims.vw_job_reference_tbl
+where 
+to_run_today = 1 and last_run is null and next_run is null
+
+
+create view db_ims.vw_all_con_details as
+select
+dcd.user_id,
+dcd.db_con_string_id,
+dcd.connection_name,
+djc.job_id,
+djc.board_category,
+djc.category,
+djc.sub_category 
+from db_ims.db_connection_details dcd 
+left join db_ims.db_ims_job_configuration djc on dcd.db_con_string_id = djc.db_con_string_id
+
+## View Change 05/21/2022
+CREATE VIEW db_ims.notify_user AS
+select
+a.user_id,
+case 
+when notif_category = 'JC' or notif_category = 'JR' then concat('monitor.php?dbid=',b.db_con_string_id,'&p=',b.paltform_val)
+when notif_category = 'AU' or notif_category = 'AP' then concat('profile.php?qpg=notification')
+end as notif_link,
+case 
+when notif_category = 'JC' then a.message_info
+when notif_category = 'JR' then coalesce(concat(a.message_info, coalesce(concat(' FOR ', b.connection_name),'')),'')
+when notif_category = 'AU' || 'AP' then a.message_info
+else '' end as message_text,
+case
+when datediff(notif_timestamp, now()) > 0 then  concat(cast(datediff(notif_timestamp, now()) as varchar(10)), ' DAYS AGO')
+when timestampdiff(HOUR, notif_timestamp, now()) > 0 then concat(cast(timestampdiff(HOUR, notif_timestamp, now()) as varchar(10)), ' HOURS AGO')
+when timestampdiff(MINUTE, notif_timestamp, now()) > 0 then concat(cast(timestampdiff(MINUTE, notif_timestamp, now()) as varchar(10)), ' MINUTES AGO')
+else concat(cast(timestampdiff(SECOND, notif_timestamp, now()) as varchar(10)), ' SECONDS AGO') end as notif_age,
+case 
+when c.notification_id is null then 'NO' else 'YES' end as notif_read
+FROM db_ims.user_notifications a 
+left join db_ims.vw_db_connection_details_complete b
+on a.user_id = b.user_id and a.db_con_string_id = b.db_con_string_id
+left join db_ims.read_notification c on a.notification_id = c.notification_id and a.user_id = c.user_id
+order by  a.notif_timestamp desc, a.notification_id desc
+
+## View Change 05/19/2022
+create view db_ims.vw_db_invetory_summary as 
+select user_id, platform, db_version, count(*) as cnt from db_ims.vw_db_invetory where connection_name is not null group by platform, db_version, user_id
+union all
+select user_id, 'TOTAL', '', count(*) as cnt from db_ims.vw_db_invetory where connection_name is not null group by user_id
+
+
+
+create view db_ims.vw_my_connection_details as
+
+with
+connection_log AS (
+select row_number() over (partition by db_con_string_id order by last_time_check asc) as row_id, db_con_string_id,
+max_connection, max_used_connection as used_connection, (max_connection -  max_used_connection) as remaining , last_time_check from db_ims.mysql_max_connections 
+), current_con as (
+select a.db_con_string_id, a.max_connection, a.used_connection, a.remaining from connection_log a join (select db_con_string_id, max(row_id) as row_id from connection_log group by db_con_string_id) b
+on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id
+)
+
+select db_con_string_id, max_connection, used_connection, remaining as remaining_connection from current_con
+
+
+create view db_ims.table_size_and_index_info as
+select
+a.db_con_string_id, 
+a.schema_name,
+a.table_name,
+coalesce(a.size_mb, 0) as size_mb,
+coalesce(x.indexable_columns, 'None') as indexable_columns
+from db_ims.mysql_db_table_size a left join (
+select
+schema_name,
+table_name,
+concat('[', group_concat(concat(column_name, ' : ', indexed) separator ' , '), ']') as indexable_columns
+from db_ims.mysql_db_table_indexable_columns
+group by schema_name, table_name ) x on a.schema_name  = x.schema_name and a.table_name = x.table_name
+where (a.size_mb is not null or a.size_mb > 0) and x.indexable_columns is not null
+
+
+create view db_ims.vw_my_active_sessions as
+select db_con_string_id, process_id, user_name, server,
+case 
+when last_command is not null and info is not null then CONCAT(last_command, ' : ', substring(info ,1,100) )
+when last_command = 'SLEEP' then last_command 
+end as last_query
+from db_ims.mysql_session_list 
+where server is not null and server is not null
+
+create view db_ims.vw_innodb_and_db_information as
+select 'DB_SIZE' as data_type, db_con_string_id, database_name as x, size_mb as y from db_ims.mysql_db_database_size
+union all
+select 'INNODB_SIZE' as data_type, db_con_string_id, RIBPS_GB as x, INNODB_Used_GB as y from db_ims.mysql_innodb_information
+
+
+create view db_ims.vw_or_connection_details as
+
+with
+connection_log AS (
+select row_number() over (partition by db_con_string_id order by last_time_check asc) as row_id, db_con_string_id,
+max_connections as max_connection, current_utilization as used_connection, (max_connections -  current_utilization) as remaining , last_time_check from db_ims.or_session_tbl
+), current_con as (
+select a.db_con_string_id, a.max_connection, a.used_connection, a.remaining from connection_log a join (select db_con_string_id, max(row_id) as row_id from connection_log group by db_con_string_id) b
+on a.db_con_string_id = b.db_con_string_id and a.row_id = b.row_id
+)
+
+select db_con_string_id, max_connection, used_connection, remaining as remaining_connection from current_con
+
+## Added view 5/21/2022
+create view db_ims.vw_check_read_notif as
+select
+user_id, 
+notif_read,
+count(1) as notf_cnt
+from db_ims.notify_user group by user_id, notif_read
+

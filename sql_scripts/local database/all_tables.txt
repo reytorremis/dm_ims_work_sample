@@ -1,0 +1,835 @@
+create database db_ims
+CREATE USER 'db_ims_admin'@'localhost' IDENTIFIED BY 'p@ssw0rd';
+GRANT ALL PRIVILEGES ON db_ims.* TO 'db_ims_admin'@'localhost' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+
+
+
+### User Table
+create table db_ims.users (
+	user_id varchar(32),
+	username varchar(50) unique NOT NULL,
+	password varchar(50) NOT NULL,
+	salt_password varchar(50) NOT NULL,
+	PRIMARY KEY (user_id)
+	)
+	
+
+### Email Address Table
+create table db_ims.email_address (
+	user_email_no int NOT NULL AUTO_INCREMENT,
+	user_id varchar(32),
+	email_address varchar(50) unique NOT NULL,
+	initial_password varchar(50),
+	PRIMARY KEY (user_email_no),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+	
+
+### Temporary Table for Connection Details
+create table db_ims.db_connection_details_temp(
+	con_id_no_temp int NOT NULL AUTO_INCREMENT,
+	user_id varchar(32),
+	host_ip varchar(50) NOT null,
+	port int NOT null,
+	db_username varchar(50) NOT NULL,
+	db_password varchar(50) NOT NULL,
+	db_platform varchar(2) NOT NULL,
+	con_status char(1) NOT NULL,
+	PRIMARY KEY (con_id_no_temp),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+
+alter table db_ims.db_connection_details_temp add column oracle_db varchar(100)
+
+### Table for Connection Details (Set)
+## Platform + last 5 char of user_id + 4 random value + first/second 4 character base on random value + 3 digit increment 
+create table db_ims.db_connection_details(
+	db_con_string_id varchar(20) NOT NULL,
+	user_id varchar(32),
+	host_ip varchar(50) NOT null,
+	port int NOT null,
+	db_username varchar(50) NOT NULL,
+	db_password varchar(50) NOT NULL,
+	db_platform varchar(2) NOT NULL,
+	timestamp datetime NOT NULL,
+	PRIMARY KEY (db_con_string_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+	
+alter table db_ims.db_connection_details 
+add column connection_name varchar(100);
+
+alter table db_ims.db_connection_details 
+add column sql_driver varchar(100);
+
+alter table db_ims.db_connection_details 
+add column db_version varchar(255);
+
+alter table db_ims.db_connection_details 
+add column oracle_db varchar(100);
+
+### Error Logs Table
+create table db_ims.error_logs(
+	error_log_id bigint AUTO_INCREMENT,
+	db_con_string_id varchar(20),
+	error_id varchar(50) NOT NULL,
+	error_details text NOT NULL,
+	error_timestamp datetime NOT NULL,
+	PRIMARY KEY (error_log_id),
+    FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+
+### Uptime Logs Table
+ create table db_ims.db_uptime_logs(
+	uptime_log_id bigint AUTO_INCREMENT,
+	db_con_string_id varchar(20),
+	uptime_check bigint NOT NULL,
+	last_db_uptime varchar(50) NOT NULL,
+	uptime_timestamp varchar(50) NOT NULL,
+	uptime_status char(1),
+	PRIMARY KEY (uptime_log_id),
+    FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+
+alter table db_ims.db_uptime_logs
+add column sql_db_id varchar(50)
+
+alter table db_ims.db_uptime_logs
+add column sql_database_details longtext;
+
+
+create table db_ims.sql_database_uptime_logs_statging(
+	sql_db_id varchar(50) not NULL,
+	db_name varchar(50) NOT NULL,
+	db_status varchar(50) NOT NULL,
+	db_create_date datetime not null
+	)
+
+
+### Generic Value Table
+create table db_ims.generic_value (
+	genval varchar(5) NOT NULL,
+	category varchar(20) NOT NULL,
+	description varchar(50) NOT NULL
+	)
+
+### Insert Generic Value
+Insert into  db_ims.generic_value(genval,category,description)
+values('MY','Platform','MySQL'),
+('MS','Platform','MS SQL Server'),
+('OR','Platform','Oracle'),
+('PG','Platform','Postgres'),
+('E','ConStatus','Establishing'),
+('F','ConStatus','Failed'),
+('C','ConStatus','Connected'),
+('USR','User_Identification','Username'),
+('EML','User_Identification','Email Address'),
+ ('N', 'CONFIG', 'Not Installed'),
+('I', 'CONFIG', 'Installed'),
+('A', 'CONFIG', 'Archived')
+
+### db_con_log
+create table db_ims.initial_db_connection_details (
+	initial_con_no int NOT NULL AUTO_INCREMENT,
+	con_id_no_temp int,
+	con_status char(1) NOT NULL,
+	comments text NULL,
+	log_timestamp datetime,
+	PRIMARY KEY (initial_con_no),
+    FOREIGN KEY (con_id_no_temp) REFERENCES db_connection_details_temp(con_id_no_temp)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+	
+
+create table db_ims.sql_database_uptime_current_logs(
+	db_con_string_id varchar(20),
+	current_cycle int NOT NULL,
+	sql_db_id varchar(50) not NULL,
+	db_name varchar(50) NOT NULL,
+	db_status varchar(50) NOT NULL,
+	db_create_date datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+	)
+	
+alter table db_ims.sql_database_uptime_current_logs
+add column index_no bigint
+
+create table db_ims.db_connection_log(
+	db_con_string_id varchar(20) not null,
+	max_connection_cnt int NOT NULL,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+)
+
+create table db_ims.db_current_connections_breakdown_staging(
+	connection_chk_id varchar(50) not null,
+	username varchar(100),
+	database_name varchar(100),
+	number_of_connections int,
+	connection_status varchar(50)
+)
+
+
+create table db_ims.sql_sp_installed_table (
+	db_con_string_id varchar(20) not null,
+	sp_name varchar(100) not null,
+	sp_status varchar(20) not null,
+	create_date datetime,
+	modify_date datetime,
+	last_date_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.sql_active_sessions (
+	db_con_string_id varchar(20) not null,
+	session_id int not null,
+	login_name varchar(255) not null,
+	login_time datetime not null,
+	last_request_end_time datetime not null,
+	host_name varchar(100),
+	program_name varchar(255),
+	nt_user_name varchar(255),
+	process_info varchar(100),
+	current_database varchar(100),
+	session_status varchar(100),
+	net_transport varchar(100),
+	protocol_type varchar(100),
+	client_net_address varchar(100),
+	port varchar(50),
+	last_date_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.sql_breakdown_of_connections (
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100),
+	number_of_connections int,
+	login_name varchar(100),
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.sql_backup_details (
+	db_con_string_id varchar(20) not null,
+	Server_name varchar(100) not null,
+	database_name varchar(100) not null,
+	database_status varchar(100) not null,
+	full_back_up_date datetime,
+	full_back_up_size_MB decimal(10,2),
+	log_back_up_date datetime,
+	log_back_up_size_MB decimal(10,2),
+	back_up_age_hrs bigint,
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.sql_backup_growth_rate (
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100) not null,
+	growth_year int not null,
+	growth_month int not null,
+	backup_size_gb decimal(10,2),
+	delta_backup_size_gb decimal(10,2),
+	compressed_backup_size_gb decimal(10,2),
+	delta_compressed_backup_size_gb decimal(10,2),
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.sql_database_growth_rate (
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100) not null,
+	growth_name varchar(100) not null,
+	file_name varchar(100) not null,
+	time_taken_sec decimal(10,2) not null,
+	start_time datetime,
+	end_time datetime,
+	change_size_mb decimal(10,2) not null,
+	application_name varchar(100),
+	host_name varchar(100),
+	login_name varchar(100),
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.sql_database_and_logs_capacity (
+	db_con_string_id varchar(20) not null,
+	database_id int,
+	database_name varchar(100),
+	database_status  varchar(100),
+	recovery_model varchar(100),
+	total_size_mb decimal(10,2),
+	data_size_mb decimal(10,2),
+	data_used_size_mb decimal(10,2),
+	log_size_mb decimal(10,2),
+	log_used_size_mb decimal(10,2),
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+
+create table db_ims.sql_memory_capacity (
+	db_con_string_id varchar(20) not null,
+	volume_mount_point varchar(100),
+	file_system_type varchar(100),
+	total_size_mb decimal(10,2),
+	free_size_mb decimal(10,2),
+	supports_comparison varchar(10),
+	is_compressed varchar(10),
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.sql_check_agent (
+	db_con_string_id varchar(20) not null,
+	sql_server_instance varchar(100),
+	sql_server_version varchar(255),
+	sql_server_status varchar(20) not null,
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.sql_job_status (
+	db_con_string_id varchar(20) not null,
+	job_name varchar(100),
+	job_run_status varchar(20),
+	job_status varchar(20) not null,
+	job_creation_date datetime not null,
+	job_modified_date datetime not null,
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.sql_job_history (
+	db_con_string_id varchar(20) not null,
+	job_name varchar(100),
+	job_run_time datetime not null,
+	job_status varchar(20) not null,
+	job_run_message text,
+	last_date_check datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.system_logs (
+	message_id bigint AUTO_INCREMENT,
+	user_id varchar(32) not null,
+	message_type char(1),
+	message text,
+	message_time_stamp datetime,
+	primary KEY(message_id),
+	FOREIGN KEY (user_id) REFERENCES users(user_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.sql_sp_execution_history (
+	history_id bigint AUTO_INCREMENT,
+	db_con_string_id varchar(20) not null,
+	sp_name varchar(100) not null,
+	sp_parameter varchar(10),
+	date_executed datetime not null,
+	sp_execution_status varchar(10),
+	primary KEY(history_id),
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.pg_db_connection_log(
+	db_con_string_id varchar(20) not null,
+	max_connection int NOT NULL,
+	used_connection int NOT NULL,
+	reserve_super int,
+	reserve_normal int,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.pg_db_session(
+	db_con_string_id varchar(20) not null,
+	db_name varchar(100),
+	user_name varchar(100),
+	client_address varchar(100),
+	state varchar(100),
+	total_connections int,
+	last_query text,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.pg_db_query_logs(
+	db_con_string_id varchar(20) not null,
+	process_id bigint,
+	user_name varchar(100),
+	run_time time,
+	query text,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.pg_cache_hit_ratio(
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100) not null,
+	cache_hit_ratio_index_percent decimal(10,2),
+	cache_hit_ratio_table_percent decimal(10,2),
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.pg_table_memory(
+	db_con_string_id varchar(20) not null,
+	table_name varchar(100) not null,
+	schema_owner varchar(100) not null,
+	table_size varchar(100),
+	index_size varchar(100),
+	approximate_rows bigint,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.pg_vacuum(
+	db_con_string_id varchar(20) not null,
+	table_name varchar(100) not null,
+	schema_owner varchar(100) not null,
+	last_vacuum datetime,
+	last_autovacuum datetime,
+	num_tups bigint,
+	dead_tups bigint,
+	avg_threshold bigint,
+	expected_av varchar(10),
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.pg_cache_breakdown(
+	db_con_string_id varchar(20) not null,
+	obj_type char(1) not null,
+	obj_name varchar(100) not null,
+	schema_owner varchar(100) not null,
+	cache_hit_ratio_percent decimal(10,2),
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.pg_db_memory(
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100) not null,
+	memory varchar(100) not null,
+	creation_date datetime,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.pg_inheritance_map(
+	db_con_string_id varchar(20) not null,
+	object_id int,
+	schema_name varchar(100),
+	parent_object_id int,
+	inheretance_map varchar(255),
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+
+create table db_ims.sp_table_reference(
+	sp_table_id int auto_increment,
+	platform varchar(5) not null,
+	sp_name varchar(100),
+	sp_parameter varchar(100),
+	query varchar(1000),
+	category varchar(50) not null,
+	sub_category varchar(50),
+	db_name varchar(100) not null,
+	table_name varchar(100) not null,
+	primary key(sp_table_id)
+)
+
+
+### Load all relevant connectors
+
+insert into db_ims.sp_table_reference(platform, sp_name, sp_parameter, db_name, table_name, category, sub_category, query)
+values
+('MS', 'sp_dbims_check_installed_sp', 'check' , 'db_ims', 'sql_sp_installed_table', 'sp_check', null, 'select * from ##sp_status_tbl'),
+('MS', 'pyodbc' , null ,'db_ims', 'db_status', 'uptime', 'connection', null),
+('MS', NULL, NULL , 'db_ims', 'sql_sp_installed_table', 'uptime', 'instance' , 'Select convert(varchar, getdate(),20) [Last Server Check], convert(varchar, sqlserver_start_time,20) [Last Server Uptime] FROM master.sys.dm_os_sys_info;'),
+('MS', NULL, NULL , 'db_ims', 'sql_sp_installed_table', 'uptime', 'database' , 'select name [Database Name], convert (varchar(20), DATABASEPROPERTYEX(name,\'Status\')) [Database Status],  convert(varchar, create_date ,20) [Database Service Date] from master.sys.databases;'),
+('MS', 'sp_dbims_display_connection_details', 'max' ,'db_ims', 'db_connection_log', 'connection', 'max_connection', NULL),
+('MS', 'sp_dbims_display_connection_details', 'breakdown' ,'db_ims', 'sql_breakdown_of_connections', 'connection', 'connection_breakdown', NULL),
+('MS', 'sp_dbims_display_connection_details', 'session' ,'db_ims', 'sql_active_sessions', 'connection', 'active_sessions', NULL),
+('MS', 'sp_dbims_extract_backup_info', NULL ,'db_ims', 'sql_backup_details', 'backup', null, NULL),
+('MS', 'sp_dbims_extract_growth_rate', 'backup' ,'db_ims', 'sql_backup_growth_rate', 'growth_rate', 'backup', 'select * from ##check_back_up_size'),
+('MS', 'sp_dbims_extract_growth_rate', 'data' ,'db_ims', 'sql_database_growth_rate', 'growth_rate', 'database', 'select * from ##check_data_size'),
+('MS', 'sp_dbims_check_sql_agent_and_jobs', 'agent' ,'db_ims', 'sql_check_agent',  'agent', 'agent_status', 'select * from ##temp_agent_chk' ),
+('MS', 'sp_dbims_check_sql_agent_and_jobs', 'status' ,'db_ims', 'sql_job_status', 'agent', 'job_status', NULL),
+('MS', 'sp_dbims_check_sql_agent_and_jobs', 'history' ,'db_ims', 'sql_job_history', 'agent', 'job_history', NULL),
+('MS', 'sp_dbims_extract_log_and_data_info', NULL ,'db_ims', 'sql_database_and_logs_capacity', 'capacity',  'db_log' ,'select * from ##extract_log_and_data'),
+('MS', 'sp_dbims_extract_memory_capacity', NULL ,'db_ims', 'sql_memory_capacity', 'capacity',  'server' , NULL),
+('PG', 'pyodbc' , null ,'db_ims', 'db_status', 'uptime', 'connection', null),
+('PG', null , null ,'db_ims', 'pg_db_connection_log', 'uptime', 'statistics', 'SELECT to_char(now(), \'YYYY-MM-DD hh24:mi:ss\'), to_char(pg_postmaster_start_time(), \'YYYY-MM-DD hh24:mi:ss\');'),
+('PG', 'sp_pg_db_operations', 'connect' ,'db_ims', 'pg_db_connection_log', 'connection', 'max_connection', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'session' ,'db_ims', 'pg_db_session', 'connection', 'active_connections', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'query' ,'db_ims', 'pg_db_query_logs', 'query_logs', null, 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'cache' ,'db_ims', 'pg_cache_hit_ratio', 'cache-hit-ratio', 'overview', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'table-memory' ,'db_ims', 'pg_table_memory', 'capacity', 'table', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'vacuum' ,'db_ims', 'pg_vacuum', 'vacuum', null, 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'index-cache' ,'db_ims', 'pg_cache_breakdown','cache-hit-ratio', 'index', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'table-cache' ,'db_ims', 'pg_cache_breakdown', 'cache-hit-ratio', 'table', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'database-memory' ,'db_ims', 'pg_db_memory', 'memory', 'database', 'select * from temp_db_operations_tbl;'),
+('PG', 'sp_pg_db_operations', 'login' ,'db_ims', 'pg_inheritance_map', 'roles', null, 'select * from temp_db_operations_tbl;'),
+('MY', 'pyodbc' , null ,'db_ims', 'db_status', 'uptime', 'connection', null),
+('MY', 'sp_extract_db_information' , 'UPTIME' ,'db_ims', 'db_uptime_logs', 'uptime', 'statistics', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information', 'INNODB' ,'db_ims', 'mysql_innodb_information', 'capacity', 'innodb', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information' , 'DATABASE' ,'db_ims', 'mysql_db_database_size', 'capacity', 'database', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information', 'TABLE' ,'db_ims', 'mysql_db_table_size', 'capacity', 'table', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information' , 'TABLE-INDEX' ,'db_ims', 'mysql_db_table_indexable_columns', 'capacity', 'index', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information', 'PROCESSLIST' ,'db_ims', 'mysql_session_list', 'connection', 'active-connections', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information' , 'CONNECTION' ,'db_ims', 'mysql_max_connections', 'connection', 'max-connection', 'select * from  mysql.db_ims_extract_tbl;'),
+('MY', 'sp_extract_db_information', 'LARGEST' ,'db_ims', 'mysql_table_and_index_summary', 'capacity', 'largest', 'select * from  mysql.db_ims_extract_tbl;')
+('OR', 'pyodbc' , null ,'db_ims', 'db_status', 'uptime', 'connection', null),
+('OR', null , null ,'db_ims', 'db_uptime_logs', 'uptime', 'statistics', 'SELECT TO_CHAR(STARTUP_TIME, \'YYYY-MM-DD HH24:MI:SS\') , TO_CHAR(SYSDATE, \'YYYY-MM-DD HH24:MI:SS\') FROM SYS.V_$INSTANCE'),
+('OR', null , null ,'db_ims', 'or_instance_details', 'availability', 'dbstatus', 'SELECT INSTANCE_NAME, HOST_NAME, STATUS, DATABASE_STATUS, ACTIVE_STATE, LOGINS FROM SYS.V_$INSTANCE'),
+('OR', null , null ,'db_ims', 'or_session_tbl', 'capacity', 'connection', 'SELECT trim(current_utilization) AS current_utilization, trim(limit_value) AS max_connections from v$resource_limit where resource_name=\'sessions\'')
+
+create table db_ims.db_status (
+	db_con_string_id varchar(20) not null,
+	db_status varchar(100) not null,
+	last_check_time datetime not null,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.py_db_query_log_details (
+	db_con_string_id varchar(20) not null,
+	response_time decimal(18,3),
+	category varchar(100) not null,
+	sub_category varchar(50),
+	query_type varchar(5), 
+	db_query varchar(1000) not NULL,
+	db_param varchar(100),
+	error_message varchar(1000),
+	query_log_status varchar(10),
+	last_time_check datetime
+)
+
+create table db_ims.generic_broad_category(
+	board_category varchar(50),
+	smaller_category varchar(50)
+)
+
+insert into db_ims.generic_broad_category(board_category, smaller_category)
+values('availability','uptime'),
+('availability','connection'),
+('capacity','query_logs'),
+('capacity','cache-hit-ratio'),
+('capacity','capacity'),
+('availability','vacuum'),
+('capacity','memory'),
+('availability','roles'),
+('misc','sp_check'),
+('availability','backup'),
+('capacity','growth_rate'),
+('availability','agent'),
+('availability','availability')
+
+
+create table db_ims.defeault_configuration_tbl (
+	platform varchar(2) not null,
+	board_category varchar(50) not null,
+	category varchar(50) not null,
+	sub_category varchar(50),
+	frequency_hr int,
+	frequency_min int,
+	frequency_sec int,
+	week_monday varchar(1) not NUll,
+	week_tuesday varchar(1) not NUll,
+	week_wednesday varchar(1) not NUll,
+	week_thursday varchar(1) not NUll,
+	week_friday varchar(1) not NUll,
+	week_saturday varchar(1) not NUll,
+	week_sunday varchar(1) not NUll,
+	set_time time,
+	week_daily varchar(1) not null,
+	occur_once varchar(1) not null
+)
+
+insert into  db_ims.defeault_configuration_tbl (platform, board_category, category, sub_category, frequency_hr, frequency_min, frequency_sec, week_monday, week_tuesday, week_wednesday, week_thursday, week_friday, week_saturday, week_sunday, week_daily, set_time,  occur_once)
+Values ('MS','availability','uptime','connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','uptime','instance',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','uptime','database',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','connection','max_connection',0,10,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','connection','connection_breakdown',0,10,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','connection','active_sessions',0,10,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','capacity','capacity','db_log',0,10,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','capacity','capacity','server',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','misc','sp_check',NULL,0,0,0,'N','N','N','N','N','N','N','N',NULL,'Y'),
+('MS','availability','backup',NULL,10,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','capacity','growth_rate','backup',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','capacity','growth_rate','database',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','agent','agent_status',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','agent','job_status',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MS','availability','agent','job_history',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','uptime','connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','uptime','statistics',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','connection','max_connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','connection','active_connections',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','query_logs',NULL,1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','cache-hit-ratio','overview',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','cache-hit-ratio','index',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','cache-hit-ratio','table',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','capacity','table',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','vacuum',NULL,1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','capacity','memory','database',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('PG','availability','roles',NULL,1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','availability','uptime','connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','availability','uptime','statistics',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','availability','connection','max_connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','capacity','capacity','innodb',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','capacity','capacity','database',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','capacity','capacity','table',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','capacity','capacity','index',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','availability','connection','active-connections',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','availability','connection','max-connection',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('MY','capacity','capacity','largest',1,0,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('OR','availability','uptime','connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('OR','availability','uptime','statistics',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('OR','availability','availability','dbstatus',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N'),
+('OR','capacity','capacity','connection',0,5,0,'N','N','N','N','N','N','N','Y',NULL,'N')
+
+
+
+create table db_ims.db_ims_job_configuration (
+	job_id varchar(40),
+	db_con_string_id varchar(20) not null,
+	platform varchar(2) not null,
+	job_no int,
+	board_category varchar(50) not null,
+	category varchar(50) not null,
+	sub_category varchar(50),
+	is_sp char(1) not null,
+	TSQL text,
+	sp_parameter varchar(50),
+	installation_status varchar(1) not null,
+	create_date datetime,
+	last_run datetime,
+	frequency_hr int,
+	frequency_min int,
+	frequency_sec int,
+	week_monday varchar(1) not NUll,
+	week_tuesday varchar(1) not NUll,
+	week_wednesday varchar(1) not NUll,
+	week_thursday varchar(1) not NUll,
+	week_friday varchar(1) not NUll,
+	week_saturday varchar(1) not NUll,
+	week_sunday varchar(1) not NUll,
+	set_time time,
+	week_daily varchar(1) not null,
+	occur_once varchar(1) not null,
+	PRIMARY KEY (job_id),
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+alter table db_ims.db_ims_job_configuration
+add column modification_date datetime
+
+create table db_ims.occurance_table_reference (
+	ref_val int,
+	day_value varchar(10),
+	check_value varchar(1)
+)
+
+insert into db_ims.occurance_table_reference
+values (1, 'MONDAY', 'Y'),
+(2, 'TUESDAY', 'Y'),
+(3, 'WEDNESDAY', 'Y'),
+(4, 'THURSDAY', 'Y'),
+(5, 'FRIDAY', 'Y'),
+(6, 'SATURDAY', 'Y'),
+(7, 'SUNDAY', 'Y')
+
+
+create table db_ims.db_ims_automated_run_queue (
+	q_no int not null,
+	iter_no int not null,
+	job_id varchar(40),
+	last_run datetime,
+	next_run datetime
+)
+
+
+create table db_ims.user_notifications (
+	notification_id varchar(50),
+	user_id varchar(32) not NULL,
+	db_con_string_id varchar(20),
+	notif_type varchar(1),
+	notif_category varchar(2),
+	is_uptime varchar(1),
+	message_info text,
+	notif_timestamp datetime,
+	primary key (notification_id),
+	FOREIGN KEY (user_id) REFERENCES users(user_id),
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE RESTRICT
+)
+
+create table db_ims.db_connection_details_archived (
+	archive_id int NOT NULL AUTO_INCREMENT,
+	db_con_string_id varchar(20) NOT NULL,
+	user_id varchar(32),
+	host_ip varchar(50) NOT null,
+	port int NOT null,
+	db_username varchar(50) NOT NULL,
+	db_password varchar(50) NOT NULL,
+	db_platform varchar(2) NOT NULL,
+	timestamp datetime NOT null,
+	PRIMARY KEY (archive_id)
+)
+
+
+create table db_ims.mysql_innodb_information (
+	db_con_string_id varchar(20) not null,
+	RIBPS_GB int,
+	INNODB_Used_GB decimal(18,6),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.mysql_db_database_size (
+	db_con_string_id varchar(20) not null,
+	database_name varchar(100),
+	size_mb decimal(10,2),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.mysql_db_table_size (
+	db_con_string_id varchar(20) not null,
+	schema_name varchar(100),
+	table_name varchar(100),
+	size_mb decimal(10,2),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.mysql_db_table_indexable_columns (
+	db_con_string_id varchar(20) not null,
+	schema_name varchar(100),
+	table_name varchar(100),
+	column_name varchar(255),
+	indexed varchar(100),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.mysql_session_list (
+	db_con_string_id varchar(20) not null,
+	process_id Bigint, 
+	user_name varchar(100),
+	database_name varchar(100),
+	server varchar(100),
+	state varchar(100),
+	last_command varchar(255),
+	info text,
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.mysql_max_connections (
+	db_con_string_id varchar(20) not null,
+	max_connection Bigint, 
+	max_used_connection Bigint,
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.mysql_table_and_index_summary (
+	db_con_string_id varchar(20) not null,
+	total_table_cnt Bigint,
+	schema_name varchar(100),
+	total_row_cnt varchar(255),
+	total_table_size varchar(255),
+	total_index_size varchar(255),
+	total_size varchar(255),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+
+create table db_ims.or_session_tbl (
+	db_con_string_id varchar(20) not null,
+	current_utilization Bigint,
+	max_connections bigint,
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+create table db_ims.or_instance_details (
+	db_con_string_id varchar(20) not null,
+	instance_name varchar(100),
+	host_name varchar(100),
+	instance_status varchar(100),
+	database_status varchar(100),
+	state varchar(100),
+	logins varchar(100),
+	last_time_check datetime,
+	FOREIGN KEY (db_con_string_id) REFERENCES db_connection_details(db_con_string_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)
+
+## Added SP 5/21/2022
+create table db_ims.read_notification (
+	notification_id varchar(50),
+	user_id varchar(32),
+	FOREIGN KEY (user_id) REFERENCES users(user_id)
+	ON UPDATE CASCADE ON DELETE cascade,
+	FOREIGN KEY (notification_id) REFERENCES user_notifications(notification_id)
+	ON UPDATE CASCADE ON DELETE CASCADE
+)

@@ -1,0 +1,87 @@
+CREATE TRIGGER db_ims.tgr_notify_in_job_scheduling
+after update on db_ims.db_ims_job_configuration
+for each row
+	begin
+		declare uptime_check int;
+		declare category_chk varchar(1);
+		set uptime_check := (select count(*) from db_ims.user_notifications where is_uptime = 'Y' and db_con_string_id = NEW.db_con_string_id
+					and notif_timestamp between date_sub(now(), interval 1 minute) and date_add(now(), interval 1 minute));
+		
+		set category_chk := (select case when category = 'uptime' then 'Y' else 'N' end from db_ims.vw_all_con_details job_id where job_id = NEW.job_id);
+	
+		if (uptime_check = 0 and category_chk = 'N') or (uptime_check = 0 and category_chk = 'Y') then
+		insert db_ims.user_notifications (notification_id, user_id, db_con_string_id, notif_type, notif_category,  message_info, notif_timestamp, is_uptime)
+		select
+		db_ims.generate_notification_id(user_id),
+		user_id,
+		db_con_string_id,
+		'I',
+		'JC',
+		coalesce(concat('CHANGED ', category,coalesce(concat('(',sub_category, ')'),''), ' JOB schedule', coalesce(concat(' FOR ', connection_name),'')), 'NONE'),
+		now(),
+		case when category = 'uptime' then 'Y' else 'N' end
+		from db_ims.vw_all_con_details
+		where job_id = NEW.job_id
+		and category is not null and connection_name is not null;
+		end if;
+	end
+
+CREATE TRIGGER db_ims.tgr_notify_in_job_execution
+after insert on db_ims.py_db_query_log_details
+for each row
+begin
+	declare message_txt text;
+	declare ntype varchar(1);
+
+	set message_txt := (select case 
+						when new.query_log_status = 'SUCCESS' then
+						coalesce(concat('SUCCESSFULLY EXECUTED ', new.category, coalesce(concat('(',new.sub_category, ')'),''), ' JOB'), 'SUCCESSFULLY EXECUTED JOB')
+						else
+						CONCAT('ERROR: ', new.error_message)
+						end);
+	
+	set ntype := (select case 
+						when new.query_log_status = 'SUCCESS' then 'I'
+						else 'E' end);
+	
+						
+				
+	insert db_ims.user_notifications (notification_id, user_id, db_con_string_id, notif_type, notif_category,  message_info, notif_timestamp, is_uptime)
+		select
+		db_ims.generate_notification_id(db_ims.get_user_id_from_con_string(NEW.db_con_string_id)),
+		db_ims.get_user_id_from_con_string(NEW.db_con_string_id),
+		NEW.db_con_string_id,
+		ntype,
+		'JR',
+		message_txt,
+		now(),
+		'N';
+end
+
+CREATE TRIGGER db_ims.tgr_notify_change_user_profile
+after update on db_ims.users
+for each row
+begin
+		
+	insert db_ims.user_notifications (notification_id, user_id, db_con_string_id, notif_type, notif_category,  message_info, notif_timestamp, is_uptime)
+		select
+		db_ims.generate_notification_id(new.user_id),
+		new.user_id,
+		null,
+		'I',
+		case 
+		when new.username = old.username and new.password != old.password then
+			'AU'
+		when new.username != old.username and new.password = old.password then
+			'AP' else 'AU' end,
+		case 
+		when new.username = old.username and new.password != old.password then
+			CONCAT('PASSWORD CHANGED SUCCESSFULLY')
+		when new.username != old.username and new.password = old.password then
+			CONCAT('USERNAME CHANGED SUCCESSFULLY')
+		else
+			CONCAT('NO CHANGE DONE')
+			end,
+		now(),
+		'N';
+end

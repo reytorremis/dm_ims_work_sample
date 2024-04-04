@@ -1,0 +1,2101 @@
+## Generate Unique ID for Users
+create function db_ims.generate_unique_user_id ()
+RETURNS varchar(32)
+deterministic
+BEGIN
+	return REPLACE(UUID(), '-', '');
+end
+
+## Generate Random Initial Password
+## - SP change 05/19/2022
+create function db_ims.generate_initial_password ()
+RETURNS varchar(10)
+deterministic
+BEGIN
+	return concat(LEFT(MD5(RAND()),5),ucase(LEFT(MD5(RAND()),5)));
+end
+
+
+## Check if Valid Email
+
+create function db_ims.validate_email (email_address_in varchar(50))
+RETURNS boolean
+deterministic
+BEGIN
+	declare check_email_val int;	
+	set check_email_val := (select email_address_in NOT REGEXP '^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9._-]@[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]\\.[a-zA-Z]{2,63}$');
+	
+	if check_email_val = 0 then
+		return true;
+	else
+		return false;
+	end if;
+end
+
+
+## Generate Username
+create function db_ims.generate_username()
+RETURNS varchar(20)
+deterministic
+begin
+	declare user_cnt int;
+	declare random_num int;
+	declare user_name_gen varchar(20);
+	set user_cnt := ((select count(1) from db_ims.users) + 1);
+	set random_num := (select round((rand())*1000,0));
+	set user_name_gen := (concat('USER',lpad(cast(user_cnt as varchar(4)),4,'0'), lpad(cast(random_num as varchar(3)),3,'0')));
+	return user_name_gen;
+end
+
+## Check if email address exists
+create function db_ims.check_email_address_exists(email_address_in varchar(50))
+RETURNS boolean
+deterministic
+begin
+	declare check_email_address int;
+	set check_email_address := (select count(1) from db_ims.email_address ea where email_address = email_address_in);
+	
+	if check_email_address = 0 then
+		return true;
+	else
+		return false;
+	end if;
+end
+
+
+
+## Insert New User Records
+## - Need Email Address to register
+## - Give Default Username and Password
+## - Initial Password
+## - SP change 05/19/2022
+Create Procedure db_ims.create_user_record (in email_address_in varchar(50), out output_statement integer)
+begin
+	declare val_email_address boolean;
+	declare user_id_temp varchar(32);
+	declare user_password_temp varchar(50);
+	declare username_temp varchar(50);
+	declare check_dup int;
+	declare qry_dup int;
+	declare salt varchar(10);
+
+	set val_email_address := (select db_ims.validate_email (email_address_in ));
+	set user_id_temp := (select db_ims.generate_unique_user_id ());
+	set user_password_temp := (select db_ims.generate_initial_password());
+	set username_temp := (select db_ims.generate_username());
+	set qry_dup := (select 1 from db_ims.email_address where email_address = email_address_in );
+	set check_dup := (select coalesce(qry_dup,0));
+	set salt := (select db_ims.generate_random_string());
+
+	if val_email_address = 1 then
+		if (check_dup = 1) then
+			set output_statement = 2;
+		else
+			insert into db_ims.users(user_id, username, password, salt_password)
+			select user_id_temp,  username_temp, user_password_temp, salt;
+	
+			insert into db_ims.email_address(user_id, email_address, initial_password)
+			select user_id_temp, email_address_in, user_password_temp;
+	
+			set output_statement = 1;
+		end if;
+	
+	else
+		set output_statement = 0;
+	end if;
+end
+
+
+### Validate Record
+## SP Change 05/19/2022
+Create function db_ims.validate_record_creation(email_address_in varchar(50))
+RETURNS int
+deterministic
+begin
+	declare outputx boolean;
+
+	call db_ims.create_user_record (email_address_in, outputx);
+
+	return outputx;
+end
+
+### Check Connection Details
+create function db_ims.check_db_connection_details(
+	ip_address_in varchar(50),
+	platform_in varchar(20),
+	port_in varchar(10)
+)
+RETURNS boolean
+deterministic
+begin
+	declare ip_address_format_chk boolean;
+	declare port_format_chk boolean;
+	declare platform_chk boolean;
+	set ip_address_format_chk := (select IS_IPV4(ip_address_in));
+	set port_format_chk := (select port_in REGEXP '^-?[0-9]+$');
+	set platform_chk := (select case when exists (select 1 from (select genval from db_ims.generic_value where category = 'platform' and genval = platform_in) as tbl_chk) then 1 else 0 end);
+
+	if ip_address_format_chk = 1 and port_format_chk = 1 and platform_chk = 1 then 
+		return true;
+	else
+		return false;
+	end if;
+end
+
+### Get User ID
+## Loop that checks user id from email address table and user table
+create function db_ims.get_user_id(
+	input_user_info varchar(50)
+)
+RETURNS varchar(32)
+deterministic
+begin
+	declare user_id_out varchar(32) default '';
+	declare check_counter int default 2;
+	check_loop: while check_counter > 0 DO
+	if check_counter = 2  then
+		set user_id_out := (select user_id from db_ims.users where username = input_user_info);
+	elseif check_counter = 1 then 
+		set user_id_out := (select user_id from db_ims.email_address where email_address = input_user_info);
+	else
+		set user_id_out := null;
+	end if;
+	
+	if user_id_out is null and check_counter > 0 then 
+		set check_counter := check_counter - 1;
+	else 
+		leave check_loop;
+	end if;
+
+	end while check_loop;
+
+	return user_id_out;
+end
+
+
+
+## Create New Record to Temporary Connection Details
+## - Need Email / Username for user paramters
+## - Need db Connection: IP Address, DB Username, DB Password, Port, Platform
+Create Procedure db_ims.create_connection_details (
+	user_param_in varchar(50),
+	ip_address_in varchar(50),
+	db_username_in varchar(50),
+	db_password_in varchar(50),
+	platform_in varchar(20),
+	port_in varchar(10),
+	in_oracle_db varchar(100)
+
+)
+begin
+	declare get_user_id varchar(50);
+	declare db_con_chk boolean;
+	declare out_param bigint;
+	
+	set get_user_id := (select db_ims.get_user_id(user_param_in));
+	set db_con_chk := (select db_ims.check_db_connection_details(ip_address_in, platform_in, port_in));
+	
+	if db_con_chk = 1 and get_user_id is not null then
+		insert into db_ims.db_connection_details_temp(user_id, host_ip, port, db_username, db_password, db_platform, con_status, oracle_db)
+		select get_user_id, ip_address_in, port_in, db_username_in, db_password_in, platform_in, 'E', nullif(in_oracle_db,'');
+	
+		SET out_param = LAST_INSERT_ID();
+	
+	else
+	
+		SET out_param = null;
+	
+	end if;
+
+	select out_param as result_query;
+	
+end
+
+### Get Temp Con ID
+create function db_ims.get_temp_con_id(
+	input_user_info varchar(50),
+	ip_address_in varchar(50),
+	platform_in varchar(20),
+	port_in varchar(10)
+)
+RETURNS bigint
+deterministic
+begin
+	declare get_user_id varchar(50);
+	declare db_con_chk boolean;
+	declare connection_id_temp bigint;
+
+	set get_user_id := (select db_ims.get_user_id(input_user_info));
+	set db_con_chk := (select db_ims.check_db_connection_details(ip_address_in, platform_in, port_in));
+
+	if db_con_chk = 1 and get_user_id is not null then
+		select con_id_no_temp into connection_id_temp from db_ims.db_connection_details_temp 
+		where user_id = get_user_id and host_ip = ip_address_in and db_platform = platform_in and 
+		port = port_in limit 1;
+	else 
+		set connection_id_temp = null;
+	end if;
+	
+	return connection_id_temp;
+end
+
+
+## Change New Record of Temporary Connection Details
+Create Procedure db_ims.change_connection_status (
+	in temp_connection_id_in bigint,
+	in con_status_in boolean,
+	out connection_status varchar(10)
+)
+begin
+	DECLARE change_status varchar(1);
+	set change_status := (select case when con_status_in = 1 then 'C' else 'F' end);
+	
+		update db_ims.db_connection_details_temp
+		set con_status = change_status
+		where con_id_no_temp = temp_connection_id_in;
+	
+	set connection_status := (select case when change_status = 'C' then 'CONNECTED' else 'FAILED' end);
+	
+end
+
+## Generate Connection ID
+create function db_ims.generate_connection_id(
+	input_user_info varchar(50),
+	platform_in varchar(20)
+)
+RETURNS varchar(20)
+deterministic
+begin
+	# Validation
+	declare user_id_out varchar(32);
+	declare platform_format_chk boolean;
+	declare user_con_cnt int;
+	declare random_num int;
+	declare modulo_result int;
+
+	# ID Generation Segments
+	declare segment2_con_id varchar(5);
+	declare segment3_con_id varchar(4);
+	declare segment4_con_id varchar(4);
+	declare segment5_con_id varchar(3);
+	
+	#Initialize
+	set user_id_out := (select db_ims.get_user_id(input_user_info));
+	set platform_format_chk := (select case when exists (select 1 from (select genval from db_ims.generic_value where category = 'platform' and genval = platform_in) as tbl_chk) then 1 else 0 end);
+	set random_num := (select round(rand() * 10000,0));
+	set modulo_result := (select mod(random_num,2));
+	set user_con_cnt := ((select count(1) from db_ims.db_connection_details where user_id = user_id_out)+1);
+	
+	#Setting up Segments
+	set segment2_con_id := (select right(user_id_out,5));
+	set segment3_con_id := (select cast(random_num as varchar(4)));
+	set segment4_con_id := (select case when modulo_result = 1 then substring(user_id_out,1,4) else substring(user_id_out,5,4) end);
+	set segment5_con_id := (select lpad(cast(user_con_cnt as varchar(3)),3,'0'));
+	
+	if user_id_out is not null and platform_format_chk = 1 then
+		return concat(platform_in, segment2_con_id, segment3_con_id, segment4_con_id, segment5_con_id);
+	else
+		return null;
+	end if;
+
+end
+
+
+
+## Procedure to transfer connection details
+Create Procedure db_ims.transfer_connection_details (
+	in temp_connection_id_in bigint,
+	in sql_driver_in varchar(100),
+	in in_version varchar(255),
+	out out_param varchar(20)
+)
+begin
+	declare get_user_param_info varchar(50);
+	declare get_platform_info varchar(20);
+	declare permanent_con_id varchar(20);
+
+	set get_user_param_info := (select username from db_ims.users where user_id = (select user_id from db_ims.db_connection_details_temp where con_id_no_temp = temp_connection_id_in));
+	set get_platform_info := (select db_platform from db_ims.db_connection_details_temp where con_id_no_temp = temp_connection_id_in);
+	set permanent_con_id := (select db_ims.generate_connection_id(get_user_param_info, get_platform_info));
+	
+
+	if permanent_con_id is not null and temp_connection_id_in is not null then 
+		insert into db_ims.db_connection_details (db_con_string_id,
+		user_id,
+		host_ip,
+		port,
+		db_username,
+		db_password,
+		db_platform,
+		sql_driver,
+		db_version,
+		oracle_db,
+		timestamp)
+		select
+		permanent_con_id,
+		user_id,
+		host_ip,
+		port,
+		db_username,
+		db_password,
+		db_platform,
+		sql_driver_in,
+		in_version,
+		oracle_db,
+		now()
+		from db_ims.db_connection_details_temp
+		where con_id_no_temp = temp_connection_id_in and con_status = 'C';
+	
+		SET out_param = (SELECT db_con_string_id FROM db_connection_details ORDER BY `timestamp` DESC LIMIT 1);
+
+	else
+		select 'Cannot Proceed with Request';
+		SET out_param = null;
+	
+	end if;
+	
+end
+
+
+## Crete Salt for password
+create function db_ims.generate_random_string ()
+RETURNS varchar(10)
+deterministic
+BEGIN
+	return ucase(left(MD5(RAND()),10));
+end
+
+
+## Retrieve salt from table
+create function db_ims.get_salt(
+	input_user_info varchar(50)
+)
+RETURNS varchar(32)
+deterministic
+begin
+	declare check_counter int default 2;
+	declare salt varchar(10) default '';
+	
+	check_loop: while check_counter > 0 DO
+	if check_counter = 2  then
+		set salt := (select salt_password from db_ims.users where username = input_user_info limit 1);
+	elseif check_counter = 1 then 
+		set salt := (select salt_password from db_ims.users where user_id  = (select user_id from db_ims.email_address where email_address = input_user_info limit 1));
+	else
+		set salt := null;
+	end if;
+	
+	if salt is null and check_counter > 0 then 
+		set check_counter := check_counter - 1;
+	else 
+		leave check_loop;
+	end if;
+
+	end while check_loop;
+
+	
+	return salt;
+end
+
+## generate db encrypted password
+create function db_ims.get_salted_password(
+	input_user_info varchar(50),
+	input_password varchar(50)
+)
+RETURNS varchar(150)
+deterministic
+begin
+	declare get_salt varchar(32) default '';
+	declare output_salted_password varchar(150);
+	
+	set get_salt := (select db_ims.get_salt(input_user_info));
+	set output_salted_password := (select sha2(concat(input_password, get_salt),512));
+
+	return output_salted_password;
+end
+
+
+## edit connection details
+Create Procedure db_ims.edit_connection_details (
+	in_db_con_string_id varchar(20),
+	in_connection_name varchar(100),
+	in_ip_address varchar(50),
+	in_port int,
+	in_admin_username varchar(50),
+	in_admin_password varchar(50)
+)
+begin 
+	drop temporary table if exists db_ims.temp_check_connection_details;
+
+	create temporary table db_ims.temp_check_connection_details
+	select 
+		in_db_con_string_id as db_con_string_id,
+		case when in_ip_address = 'localhost' then '127.0.0.1' else  in_ip_address end as ip_address,
+		in_port as port,
+		in_connection_name as connection_name,
+		in_admin_username as admin_username,
+		in_admin_password as admin_password;
+	
+		update db_ims.db_connection_details dcd join db_ims.temp_check_connection_details tccd 
+		on dcd.db_con_string_id = tccd.db_con_string_id
+		set 
+		dcd.connection_name  = tccd.connection_name,
+		dcd.host_ip = tccd.ip_address,
+		dcd.port = tccd.port,
+		dcd.db_username = tccd.admin_username,
+		dcd.db_password = tccd.admin_password,
+		dcd.`timestamp` = now();
+end
+
+
+## remove connection details
+Create Procedure db_ims.remove_connection_details (
+	in_db_con_string_id varchar(20)
+)
+begin 
+	
+	delete from db_ims.db_connection_details where db_con_string_id = in_db_con_string_id;
+			
+end
+
+
+## get username and password
+
+Create Procedure db_ims.get_username_and_password (
+in in_email varchar(50),
+out out_username varchar(50),
+out out_password varchar(50))
+begin
+	declare var_user_id varchar(32);
+	set var_user_id := (select user_id from db_ims.email_address where email_address = in_email);
+	
+	select username into out_username from db_ims.users u where u.user_id = var_user_id;
+
+	select password into out_password from db_ims.users u where u.user_id = var_user_id;
+		
+end
+
+
+create procedure db_ims.remove_user(
+	in_user_id varchar(50)
+)
+begin
+	declare user_id_var varchar(50);
+
+	select user_id into user_id_var from db_ims.users where user_id = in_user_id;
+
+	delete from db_ims.db_connection_details where user_id = user_id_var;
+
+	delete from db_ims.db_connection_details_temp where user_id = user_id_var;
+	
+	delete from db_ims.email_address where user_id = user_id_var;
+
+	delete from db_ims.users where user_id = user_id_var;
+end
+
+
+## Remve Temporary Connection
+Create procedure db_ims.remove_temporary_connection_details (
+	in temp_connection_id_in bigint
+)
+begin
+
+	delete from db_connection_details_temp where con_id_no_temp = temp_connection_id_in;
+	
+	
+end
+
+## Change get details, transfer connection details and return con id
+Create procedure db_ims.transfer_to_permanent_connection_details (
+	temp_connection_id_in bigint,
+	con_status_in int,
+	sql_driver_in varchar(100)
+)
+begin
+	declare change_status_out varchar(1);
+	declare new_conenction_id varchar(20);
+
+	call db_ims.change_connection_status(temp_connection_id_in, case when con_status_in = 1 then true else 0 end, change_status_out);
+
+	if change_status_out = 'T' then
+
+		DO SLEEP(3);
+
+		call db_ims.transfer_connection_details(temp_connection_id_in, sql_driver_in, new_conenction_id);
+	
+		DO SLEEP(2);
+
+	
+	else 
+		set new_conenction_id := null;
+	
+		
+	
+	end if;
+
+	delete from db_connection_details_temp where con_id_no_temp = temp_connection_id_in;
+	
+	select new_conenction_id;
+	
+end
+
+
+
+## Change get password
+create function db_ims.get_new_password(
+	input_id_in varchar(50)
+)
+RETURNS varchar(50)
+deterministic
+begin
+	declare out_password varchar(50) default '';
+	
+	set out_password  := (select password from db_ims.users where user_id = input_id_in);
+
+	return out_password;
+end
+
+
+Create Procedure db_ims.rename_db_connection (
+ 	in_db_con_string varchar(50),
+ 	in_alias varchar(100)
+ )
+ begin
+	 
+	 update db_ims.db_connection_details
+	 set connection_name = in_alias
+	 where db_con_string_id = in_db_con_string;
+	 
+ end
+ 
+ ## Check last active database uptime
+create function db_ims.get_uptime_cycle(
+	in_db_connection_string varchar(50)
+)
+RETURNS bigint
+deterministic
+begin
+	declare cycle_cnt int;
+	declare current_cnt int;
+	declare input_check int;
+	
+	set current_cnt := (select count(1) from db_ims.db_uptime_logs where db_con_string_id = in_db_connection_string and uptime_status = 'A');
+	set cycle_cnt := (select COALESCE((select max(uptime_check) from db_ims.db_uptime_logs where db_con_string_id = in_db_connection_string and uptime_status = 'A'),0));
+
+	if cycle_cnt > current_cnt then
+		return cycle_cnt;
+	elseif cycle_cnt < current_cnt then
+		return current_cnt;
+	else
+		return current_cnt;
+	end if;
+end
+ 
+## Change Status of other connections when conditions are met
+  
+ Create Procedure db_ims.sp_deactive_other_uptime (
+ 	in_db_connection_string varchar(50)
+ )
+ begin 
+	update db_ims.db_uptime_logs
+	set uptime_status = 'X'
+	where db_con_string_id = in_db_connection_string;
+ end
+ 
+ 
+ ## Add Uptime Record
+ 
+Create Procedure db_ims.sp_add_uptime_check (
+ 	in_db_connection_string varchar(50),
+ 	in_db_last_check_string varchar(50),
+ 	in_db_uptime_string varchar(50),
+ 	in_check_cycle int
+ )
+ begin 
+	 
+	insert into db_ims.db_uptime_logs(db_con_string_id, uptime_check, last_db_uptime , uptime_timestamp, uptime_status)
+	values (in_db_connection_string, in_check_cycle ,  in_db_uptime_string, in_db_last_check_string, 'A');
+ end
+ 
+ ## Check if db uptime < last check
+	
+ Create Procedure db_ims.sp_validate_uptime_check (
+ 	in in_db_last_check_string varchar(50),
+ 	in in_db_uptime_string varchar(50),
+ 	out status_output varchar(10)
+ )
+ begin 
+	if STR_TO_DATE(in_db_last_check_string,'%Y-%m-%d %H:%i:%s') >= DATE_ADD(STR_TO_DATE(in_db_uptime_string,'%Y-%m-%d %H:%i:%s'), INTERVAL 1 MINUTE) then 
+		set status_output = 'CONTINUE';
+	else
+		set status_output = 'FAILED';
+	end if;
+ end
+ 
+ 
+ 
+ ## Check Conditions if it follows a logical flow upon insert
+ 
+Create Procedure db_ims.sp_check_last_db_uptime (
+ 	in in_db_connection_string varchar(50),
+ 	in in_db_last_check_string varchar(50),
+ 	in in_db_uptime_string varchar(50),
+ 	out status_output varchar(10),
+ 	out new_uptime_cycle int
+ )
+ begin
+	 declare var_latest_db_uptime datetime;
+	 declare var_latest_db_check datetime;
+	 declare last_active_cycle int;
+	
+	set last_active_cycle := (select db_ims.get_uptime_cycle(in_db_connection_string));
+	set var_latest_db_uptime := (select STR_TO_DATE(last_db_uptime,'%Y-%m-%d %H:%i:%s') from db_ims.db_uptime_logs where db_con_string_id = in_db_connection_string and uptime_check = last_active_cycle and uptime_status = 'A');
+	set var_latest_db_check := (select STR_TO_DATE(uptime_timestamp,'%Y-%m-%d %H:%i:%s') from db_ims.db_uptime_logs where db_con_string_id = in_db_connection_string and uptime_check = last_active_cycle and uptime_status = 'A');	
+
+	if (var_latest_db_uptime = STR_TO_DATE(in_db_uptime_string,'%Y-%m-%d %H:%i:%s') and  var_latest_db_check < STR_TO_DATE(in_db_last_check_string,'%Y-%m-%d %H:%i:%s')) or last_active_cycle = 0 then
+		set new_uptime_cycle = last_active_cycle + 1;
+		set status_output = 'CONTINUE';
+	elseif var_latest_db_uptime < STR_TO_DATE(in_db_uptime_string,'%Y-%m-%d %H:%i:%s') and var_latest_db_check < STR_TO_DATE(in_db_last_check_string,'%Y-%m-%d %H:%i:%s') then 
+		call db_ims.sp_deactive_other_uptime(in_db_connection_string);
+		set new_uptime_cycle = 1;
+		set status_output = 'CONTINUE';
+	else
+		set status_output = 'FAILED';
+		set new_uptime_cycle = 0;
+	end if;	
+	
+ end
+
+
+
+
+## validate and executes procedures when conidtions are met
+
+Create procedure db_ims.validate_uptime_records (
+	in in_db_connection_string varchar(50),
+ 	in in_db_last_check_string varchar(50),
+ 	in in_db_uptime_string varchar(50),
+ 	out output_message varchar(3)
+)
+ begin 
+	declare procedure_status varchar(10);
+	declare cycle_no int;
+	
+	call db_ims.sp_validate_uptime_check (in_db_last_check_string, in_db_uptime_string, procedure_status);
+
+	if procedure_status = 'CONTINUE' then
+		call db_ims.sp_check_last_db_uptime (in_db_connection_string, in_db_last_check_string, in_db_uptime_string, procedure_status, cycle_no);
+	end if;
+
+	if procedure_status = 'CONTINUE' and cycle_no > 0 then
+		call db_ims.sp_add_uptime_check(in_db_connection_string, in_db_last_check_string, in_db_uptime_string, cycle_no);
+	end if;
+
+	if procedure_status = 'FAILED' and cycle_no is null then
+		set output_message = 'F1';
+	elseif procedure_status = 'FAILED' and cycle_no = 0 then
+		set output_message = 'F2';
+	else
+		set output_message = 'OK';
+	end if;
+
+ end
+
+Create function db_ims.generate_sql_id(in_db_connection_string varchar(50),in_cycle_no bigint)
+RETURNS varchar(50)
+DETERMINISTIC
+begin
+	
+	return concat(in_db_connection_string ,cast(in_cycle_no as varchar(19)));
+end
+
+## Add SQL Server database statuses
+
+Create Procedure db_ims.sp_add_database_statuses (
+ 	in in_db_connection_string varchar(50),
+ 	in in_db_name varchar(50),
+ 	in in_db_status varchar(50),
+ 	in in_db_service_date varchar(50),
+ 	out output_message varchar(100)
+ )
+ begin
+	declare curr_cycle bigint;
+	declare output_sql_db_id varchar(50);
+	declare counter_chk int;
+	declare message_var varchar(100);
+	
+	set curr_cycle := (select db_ims.get_uptime_cycle(in_db_connection_string));
+	set output_sql_db_id := (select db_ims.generate_sql_id(in_db_connection_string,curr_cycle));
+	set counter_chk := (select count(1) from db_ims.sql_database_uptime_logs_statging where sql_db_id = output_sql_db_id);
+	set message_var = '';
+
+	if curr_cycle > 0 then
+		insert into db_ims.sql_database_uptime_logs_statging (sql_db_id, db_name, db_status, db_create_date)
+		select output_sql_db_id, in_db_name, in_db_status, STR_TO_DATE(in_db_service_date,'%Y-%m-%d %H:%i:%s');
+		set message_var := concat(message_var,'Database ', in_db_name, ' inserted to staging;');
+	else 
+		set message_var := concat(message_var,'Failed to insert Database ', in_db_name, ' into to staging;');
+	end if;
+	
+	if counter_chk = 0 then
+		update db_ims.db_uptime_logs
+		set sql_db_id = output_sql_db_id
+		where db_con_string_id = in_db_connection_string and uptime_check = curr_cycle and uptime_status = 'A';
+		set message_var := concat(message_var, 'Updating sql id ', output_sql_db_id, 'in staging;');
+	else
+		set message_var := concat(message_var, 'Skip Update sql id ', output_sql_db_id);
+	end if;
+	
+	set output_message := message_var;
+ end
+ 
+ 
+ 
+Create Procedure db_ims.sp_update_database_details (
+	in in_db_connection_string varchar(50),
+	out output_message varchar(255)
+)
+
+begin
+	
+	declare in_curr_cycle_no bigint;
+	declare proc_sql_id varchar(50);
+	declare message_var varchar(255);
+	
+	set in_curr_cycle_no := (select db_ims.get_uptime_cycle(in_db_connection_string));
+	set proc_sql_id := (select db_ims.generate_sql_id(in_db_connection_string, in_curr_cycle_no));
+	set message_var := '';
+
+	DROP TEMPORARY TABLE IF EXISTS db_ims.staging_to_json_tbl;
+	set message_var := concat(message_var, '[1] Dropping Temp Table; ');
+	
+	CREATE TEMPORARY TABLE db_ims.staging_to_json_tbl(
+	sql_db_id varchar(50),
+	json_con longtext
+	);
+	
+	set message_var := concat(message_var, '[2] Creating Temp Table; ');
+	
+	
+	insert into db_ims.staging_to_json_tbl (sql_db_id, json_con)
+	SELECT sql_db_id,  
+	CONCAT('[', GROUP_CONCAT(JSON_OBJECT('db_name', db_name, 'db_status', db_status, 'db_service_date', db_create_date)), ']') as json_con 
+	from db_ims.sql_database_uptime_logs_statging  where sql_db_id = proc_sql_id group by sql_db_id;
+
+	set message_var := concat(message_var, '[3] Extracting Aggregated Data to Temp Table; ');
+
+	update db_ims.db_uptime_logs a join db_ims.staging_to_json_tbl b on a.sql_db_id = b.sql_db_id
+	set a.sql_database_details = b.json_con
+	where a.db_con_string_id = in_db_connection_string and uptime_status = 'A' and uptime_check = in_curr_cycle_no;
+	
+	set message_var := concat(message_var, '[4] Updating JSON field from uptime logs table; ');
+	
+	delete from db_ims.sql_database_uptime_logs_statging where sql_db_id = proc_sql_id;
+
+	set message_var := concat(message_var, '[5] Deleting Staging Logs; ');
+
+	call db_ims.dejson_current_uptime_records(proc_sql_id);
+	
+	set message_var := concat(message_var, '[6] DeJsonifying Current Records;');
+
+	set output_message := message_var;
+	
+end
+
+
+
+
+CREATE PROCEDURE db_ims.dejson_current_uptime_records(in_sql_id varchar(50))
+begin
+	declare array_length int;
+	declare proc_counter int;
+	declare validate_target_cnt int;
+	declare current_sql_db_id varchar(50);
+	
+	set @array_length = (select JSON_LENGTH(sql_database_details) from db_ims.db_uptime_logs where sql_db_id = in_sql_id) ;
+	set @proc_counter = 0;
+	set @validate_target_cnt = (select count(1) from db_ims.db_uptime_logs a inner join db_ims.sql_database_uptime_current_logs b on a.sql_db_id = b.sql_db_id and a.uptime_status = 'A' and sql_database_details is not null where a.sql_db_id = in_sql_id);
+	set @current_sql_db_id = (select distinct sql_db_id from db_ims.sql_database_uptime_current_logs where db_con_string_id = (select distinct db_con_string_id from db_ims.db_uptime_logs where sql_db_id = in_sql_id and uptime_status = 'A'));
+
+	DROP TEMPORARY TABLE IF EXISTS db_ims.row_generator_index;
+	DROP TEMPORARY TABLE IF EXISTS db_ims.sql_database_staging;
+	
+	CREATE TEMPORARY TABLE db_ims.row_generator_index(
+	idx int
+	);
+
+	CREATE TEMPORARY TABLE db_ims.sql_database_staging(
+	db_con_string_id varchar(20),
+	current_cycle int,
+	sql_db_id varchar(50),
+	index_no int,
+	db_name varchar(50),
+	db_status varchar(50),
+	db_create_date datetime
+	);
+
+	get_idx: while @proc_counter < @array_length DO
+	insert into db_ims.row_generator_index(idx)
+	select  @proc_counter;
+
+	set  @proc_counter = @proc_counter + 1;
+	END while get_idx;
+		
+	insert into db_ims.sql_database_staging(db_con_string_id, current_cycle,sql_db_id, index_no, db_name, db_status, db_create_date)
+	select
+	  dul.db_con_string_id,
+	  dul.uptime_check as current_cycle,
+	  dul.sql_db_id, 
+	  idx,
+	  JSON_UNQUOTE(JSON_EXTRACT(dul.sql_database_details,  CONCAT('$[', idx, '].db_name'))) AS db_name,
+	  JSON_UNQUOTE(JSON_EXTRACT(dul.sql_database_details,  CONCAT('$[', idx, '].db_status'))) AS db_status,
+	  JSON_UNQUOTE(JSON_EXTRACT(dul.sql_database_details,  CONCAT('$[', idx, '].db_service_date'))) AS db_service_date
+	FROM db_ims.db_uptime_logs dul 
+	JOIN db_ims.row_generator_index AS indexes
+	WHERE JSON_EXTRACT(sql_database_details, CONCAT('$[', idx, '].db_name')) IS NOT null and sql_db_id = in_sql_id;
+
+	if @validate_target_cnt = 0 then
+		if @validate_target_cnt <> @array_length then
+			delete from  db_ims.sql_database_uptime_current_logs where sql_db_id = @current_sql_db_id;
+		end if;
+		
+			insert into db_ims.sql_database_uptime_current_logs(db_con_string_id, current_cycle, sql_db_id, index_no, db_name, db_status, db_create_date)
+			select 	db_con_string_id, current_cycle, sql_db_id, index_no, db_name, db_status, db_create_date from db_ims.sql_database_staging;
+			
+	else
+		if @validate_target_cnt <> @array_length then
+			delete from  db_ims.sql_database_uptime_current_logs where sql_db_id = @current_sql_db_id;
+			insert into db_ims.sql_database_uptime_current_logs(db_con_string_id, current_cycle, sql_db_id, index_no, db_name, db_status, db_create_date)
+			select 	db_con_string_id, current_cycle, sql_db_id, index_no, db_name, db_status, db_create_date from db_ims.sql_database_staging;
+		else
+			update db_ims.sql_database_uptime_current_logs a inner join db_ims.sql_database_staging b on a.db_con_string_id = b.db_con_string_id and a.index_no = b.index_no
+			set a.current_cycle = b.current_cycle, a.sql_db_id = b.sql_db_id, a.db_name = b.db_name, a.db_status = b.db_status, a.db_create_date = b.db_create_date;
+		end if;
+	
+	end if;
+
+end
+
+
+CREATE PROCEDURE db_ims.insert_db_max_connection_details(
+	in in_db_con_string varchar(50),
+	in in_max_con bigint,
+	out output_message varchar(100)
+)
+begin
+	
+	declare con_chk_id varchar(50);
+	declare validate_chk_id int;
+	set @con_chk_id := (select CONCAT(in_db_con_string, 'KEYX'));
+	set @validate_chk_id := (select coalesce((select 1 from db_ims.db_connection_log where connection_chk_id = @con_chk_id) ,0));
+	
+	if @validate_chk_id = 0 then
+		insert into db_ims.db_connection_log(connection_chk_id, db_con_string_id, max_connection_cnt, last_check_time)
+		select @con_chk_id, in_db_con_string, in_max_con, now();
+	
+		set output_message := (select Concat('No existing record for ', in_db_con_string , '. Inserting New record with connection_chk_id = ', @validate_chk_id));
+	else 
+		update db_ims.db_connection_log
+		set max_connection_cnt = in_max_con,
+		last_check_time = now()
+		where connection_chk_id = @con_chk_id;
+	
+		set output_message := (select Concat('Found an existing record for ', in_db_con_string , '.Updating connection_chk_id = ', @validate_chk_id));
+	end if;
+
+end
+
+
+
+CREATE PROCEDURE db_ims.stage_breakdown_logs(
+	in in_db_con_string varchar(50),
+	in in_username varchar(100),
+	in in_database_name varchar(100),
+	in in_number_of_connections int,
+	in in_connection_status varchar(50),
+	out output_message varchar(100)
+)
+begin
+	declare con_chk_id varchar(50);
+	
+	set @con_chk_id := (select coalesce((select connection_chk_id from db_ims.db_connection_log where db_con_string_id = in_db_con_string) ,'NONE'));
+	
+	if @con_chk_id <> 'NONE' then
+		insert into db_ims.db_current_connections_breakdown_staging(connection_chk_id, username, database_name, number_of_connections, connection_status)
+		select  @con_chk_id, in_username, in_database_name, in_number_of_connections, in_connection_status;
+		
+		set output_message := 'Successfully inserted data to staging table.';
+	else
+		set output_message := Concat('Could not locate Check ID from ', in_db_con_string);
+	end if;
+
+end
+
+Create procedure db_ims.sp_log_to_systems_log_tbl (
+	in_db_connection_string varchar(50),
+	in_message_type char(1),
+	in_message text
+)
+ begin
+	declare proc_user_id varchar(32);
+	select user_id into @proc_user_id from db_ims.db_connection_details dcd where db_con_string_id = in_db_connection_string;
+
+	insert into db_ims.system_logs (user_id, message_type, message, message_time_stamp)
+	select @proc_user_id, in_message_type, in_message, now();
+	 
+ end
+ 
+ 
+ 
+Create procedure db_ims.sp_store_to_sp_history (
+	in_db_connection_string varchar(50),
+	in_sp_name varchar(100),
+	in_sp_parameters varchar(25),
+	in_sp_execution_status varchar(10),
+	in_platform varchar(10)
+)
+ begin
+	declare sp_check int;
+	declare converted_sp_name varchar(255);
+	set converted_sp_name := (select db_ims.fxn_get_tbl_name(in_sp_name, in_platform));
+	set @sp_check := ( select 1 from db_ims.sql_sp_installed_table where sp_status = 'Installed' and sp_name = converted_sp_name and db_con_string_id = in_db_connection_string limit 1);
+
+	if @sp_check = 1 then
+		insert into db_ims.sql_sp_execution_history (db_con_string_id, sp_name, sp_parameter, date_executed, sp_execution_status)
+		select in_db_connection_string, converted_sp_name, in_sp_parameters, now(), in_sp_execution_status;
+	 end if;
+ end
+ 
+ 
+ Create procedure db_ims.sp_get_active_sessions (
+	in_db_con_string_id varchar(20),
+	in_session_id int,
+	in_login_name varchar(255),
+	in_login_time datetime,
+	in_last_request_end_time datetime,
+	in_host_name varchar(100),
+	in_program_name varchar(255),
+	in_nt_user_name varchar(255),
+	in_process_info varchar(100),
+	in_current_database varchar(100),
+	in_net_transport varchar(100),
+	in_protocol_type varchar(100),
+	in_client_net_address varchar(100),
+	in_port varchar(50)
+)
+ begin
+	 
+	insert into db_ims.sql_active_sessions (db_con_string_id,session_id,login_name,login_time,last_request_end_time,host_name,program_name,nt_user_name,process_info,current_database, net_transport,protocol_type,client_net_address,port, last_date_check)
+	select in_db_con_string_id,in_session_id,in_login_name,in_login_time,in_last_request_end_time,in_host_name,in_program_name,in_nt_user_name,in_process_info,in_current_database, in_net_transport,in_protocol_type,in_client_net_address,in_port, now();
+
+ end
+ 
+ 
+Create procedure db_ims.sp_get_breakdown_connections (
+	in_db_con_string_id varchar(20),
+	in_database_name varchar(100),
+	in_number_of_connections int,
+	in_login_name varchar(100)
+)
+ begin
+	 
+	insert into db_ims.sql_breakdown_of_connections (db_con_string_id, database_name, number_of_connections, login_name, last_date_check)
+	select in_db_connection_string, in_database_name, in_number_of_connections, in_login_name,now();
+
+ end
+ 
+ ## Get table name
+create function db_ims.fxn_get_tbl_name(
+	in_sp_name varchar(255),
+	in_platform varchar(10)
+)
+RETURNS varchar(255)
+deterministic
+begin
+ 	declare start_str int;
+ 	declare end_str int;
+ 	SET in_platform = NULLIF(in_platform, 'None');
+ 
+ 	if in_platform = 'MS' then
+ 		set start_str = (select  locate('.', in_sp_name) + 2);
+ 		set end_str = (select  locate(']', in_sp_name, start_str));
+ 	elseif  in_platform = 'PG' then
+ 		set start_str = (select  locate('public', in_sp_name) + length('public') + 1);
+ 		set end_str = (select  locate('(', in_sp_name , start_str));
+ 	elseif  in_platform = 'MY' then
+ 		set start_str = (select  locate('mysql', in_sp_name) + length('mysql') + 1);
+ 		set end_str = (select  locate('(', in_sp_name , start_str));
+ 	else
+ 		set start_str = 0;
+ 		set end_str = length(in_sp_name);
+ 	end if;
+ 	return (SELECT SUBSTRING(in_sp_name,   start_str, end_str - start_str));
+end
+
+## Get Table reference
+Create function db_ims.sp_table_reference (
+	`in_platform` varchar(20),
+	`in_sp_name` varchar(100),
+	`in_sp_parameter` varchar(100),
+	`in_output` char(1)
+)
+returns varchar(100)
+deterministic 
+ begin
+	declare tab_name varchar(100);
+	declare con_sp_name varchar(100);
+	
+	set con_sp_name := (select db_ims.fxn_get_tbl_name(in_sp_name, in_platform));
+	set in_sp_parameter := NULLIF(in_sp_parameter, 'None');
+
+
+	select
+	concat(db_name,'.',table_name) into tab_name
+	from db_ims.sp_table_reference
+	where platform = in_platform
+	and sp_name = con_sp_name
+	and coalesce(sp_parameter,'') = coalesce(in_sp_parameter,'');
+
+	if `in_output` = 'T' then
+		return tab_name;
+	elseif `in_output` = 'S' then
+		return con_sp_name;
+	else 
+		return null;
+	end if;
+end
+
+## mask Password
+create function db_ims.fxn_mask_password (in_password varchar(255))
+RETURNS varchar(255)
+deterministic
+begin
+	declare fchar varchar(1);
+	declare lchar varchar(1);
+	declare mchar varchar(253);
+	declare pas_length int;
+
+	set fchar := (select SUBSTR(in_password, 1, 1));
+	set pas_length := (select CHAR_LENGTH(in_password));
+	set lchar := (select SUBSTR(in_password, pas_length, 1));
+	set mchar := (select  REPEAT('*', pas_length-2));
+	
+	return concat(fchar,mchar,lchar);
+	
+end
+
+
+## Record online or offline
+Create procedure db_ims.sp_insert_status (
+	in_db_connection_string varchar(50),
+	in_status varchar(50)
+)
+ begin
+	 insert into db_ims.db_status (db_con_string_id, db_status, last_check_time)
+	 select in_db_connection_string, in_status, now();
+ end
+ 
+ ## Get username
+ create function db_ims.get_username(
+	in_userid varchar(50)
+)
+RETURNS varchar(50)
+deterministic
+begin
+	declare get_username varchar(50);
+	set get_username := (select username from db_ims.users where user_id = in_userid limit 1);
+	return get_username;
+end
+
+
+create procedure db_ims.generate_growthrate_back_up_pivot_tbl (in_db_con_string varchar(100))
+begin
+	declare stmt varchar(1000);
+	declare sql_stmt varchar(1000);
+
+drop temporary table if exists x_tbl;
+
+create temporary table  x_tbl(
+	db_con_string_id varchar(100),
+	db_name varchar(100),
+	growth_year int,
+	backup_size_gb decimal(10,2)
+);
+
+insert into  x_tbl (db_con_string_id, db_name, growth_year, backup_size_gb)
+select
+db_con_string_id,
+database_name,
+growth_year,
+coalesce(sum(backup_size_gb),0) as backup_size_gb
+from db_ims.sql_backup_growth_rate 
+where db_con_string_id = in_db_con_string
+group by db_con_string_id, database_name, growth_year;
+
+SELECT
+  GROUP_CONCAT(DISTINCT
+    CONCAT(
+      'ifnull(SUM(case when growth_year = ''',
+      growth_year,
+      ''' then backup_size_gb * 1000 end),0) AS `',
+     growth_year, '`'
+    )
+  ) INTO sql_stmt
+from x_tbl;
+
+SET sql_stmt = (select CONCAT('SELECT db_con_string_id,db_name,', sql_stmt,  
+                  'FROM x_tbl 
+                   GROUP BY db_con_string_id,db_name'));
+
+PREPARE stmt FROM sql_stmt;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+end
+
+## Convert Memory to Bytes
+create function db_ims.fxn_convert_to_bytes(
+	in_mem_string varchar(255)
+)
+returns bigint
+deterministic
+begin
+	declare int_param int;
+	declare con_param varchar(255);
+	declare con_multiplier int;
+
+	set int_param := (select cast(trim(SUBSTRING_INDEX(SUBSTRING_INDEX(in_mem_string, ' ', 1), ' ', -1)) as int));
+	set con_param := (select trim(SUBSTRING_INDEX(SUBSTRING_INDEX(in_mem_string, ' ', 2), ' ', -1)));
+	set con_multiplier := (select 
+							case when con_param = 'bytes' then POWER(1024,0)
+							when con_param = 'kB' then POWER(1024,1)
+							when con_param = 'MB' then POWER(1024,2)
+							when con_param = 'GB' then POWER(1024,3)
+							end);
+	return int_param * con_multiplier;
+end
+
+
+create procedure db_ims.sp_log_py_db_details 
+(
+in_db_con_string varchar(100),
+in_res_time decimal(18,3),
+in_query varchar(1000),
+in_param varchar(100),
+in_error varchar(1000),
+in_type varchar(1),
+in_status varchar(10)
+)
+begin
+	declare con_sp_name varchar(100);
+	declare sp_platform varchar(50);
+
+	set sp_platform := (select db_platform from db_ims.db_connection_details where db_con_string_id = in_db_con_string);
+
+	drop temporary table if exists x_tbl;
+
+	create temporary table  x_tbl(
+		db_con_string_id varchar(100),
+		res_time  decimal(18,3),
+		chk_query varchar(1000),
+		chk_param varchar(100),
+		error_msg varchar(1000),
+		q_status varchar(10),
+		db_platform varchar(50)
+	);
+	
+	
+	if in_type = 'P' then
+	set con_sp_name := (select db_ims.fxn_get_tbl_name(in_query, sp_platform));
+
+	insert into x_tbl (db_con_string_id, res_time, chk_query, chk_param, error_msg, q_status, db_platform)
+	select in_db_con_string, in_res_time, con_sp_name, nullif(in_param,''), in_error, in_status, sp_platform;
+	
+	insert into db_ims.py_db_query_log_details(db_con_string_id, response_time, category, sub_category, query_type, db_query, db_param, error_message, query_log_status, last_time_check)
+	select 
+	distinct
+	a.db_con_string_id, 
+	a.res_time,
+	b.category,
+	b.sub_category,
+	'PROC',
+	a.chk_query, 
+	a.chk_param, 
+	case when a.q_status = 'E' then a.error_msg else null end,
+	case when a.q_status = 'E' then 'ERROR' when a.q_status = 'S' then 'SUCCESS'else 'UNKNOWN' end,
+	now()
+	from x_tbl a inner join db_ims.sp_table_reference b 
+	on a.db_platform = b.platform and a.chk_query = b.sp_name and coalesce(a.chk_param,'') = coalesce(b.sp_parameter, '');
+	
+	elseif in_type = 'Q' then
+
+	insert into x_tbl (db_con_string_id, res_time, chk_query, chk_param, error_msg, q_status, db_platform)
+	select in_db_con_string, in_res_time, in_query, in_param, in_error, in_status, sp_platform;
+	
+	insert into db_ims.py_db_query_log_details(db_con_string_id, response_time, category, sub_category, query_type, db_query, db_param, error_message, query_log_status, last_time_check)
+	select 
+	distinct
+	a.db_con_string_id, 
+	a.res_time,
+	b.category,
+	b.sub_category,
+	'QUERY',
+	a.chk_query, 
+	null,
+	case when a.q_status = 'E' then a.error_msg else null end,
+	case when a.q_status = 'E' then 'ERROR' when a.q_status = 'S' then 'SUCCESS'else 'UNKNOWN' end,
+	now()
+	from x_tbl a inner join db_ims.sp_table_reference b 
+	on a.db_platform = b.platform and a.chk_query = b.query;
+	
+	elseif in_type = 'Y' then
+
+	insert into x_tbl (db_con_string_id, res_time, chk_query, chk_param, error_msg, q_status, db_platform)
+	select in_db_con_string, in_res_time, in_query, nullif(in_param,''), in_error, in_status, sp_platform;
+
+	insert into db_ims.py_db_query_log_details(db_con_string_id, response_time, category, sub_category, query_type, db_query, db_param, error_message, query_log_status, last_time_check)
+	select 
+	distinct
+	a.db_con_string_id, 
+	a.res_time,
+	b.category,
+	b.sub_category,
+	'CON',
+	a.chk_query, 
+	a.chk_param, 
+	case when a.q_status = 'E' then a.error_msg else null end,
+	case when a.q_status = 'E' then 'ERROR' when a.q_status = 'S' then 'SUCCESS'else 'UNKNOWN' end,
+	now()
+	from x_tbl a inner join db_ims.sp_table_reference b 
+	on a.db_platform = b.platform and a.chk_query = b.sp_name and coalesce(a.chk_param,'') = coalesce(b.sp_parameter, '');
+
+	end if;
+	
+end
+
+## - SP change 05/19/2022
+create function db_ims.fx_get_db_version (in_platform varchar(2), in_db_version varchar(255))
+returns varchar(100)
+deterministic
+begin
+	declare stopper varchar(1);
+	declare string_version varchar(100);
+	if in_platform ='MS' then 
+		set stopper := '-';
+		set string_version := (select trim(substring(in_db_version, 1, locate(stopper, in_db_version)-1)));
+	elseif in_platform ='PG' then 
+		set stopper := ',';
+		set string_version := (select trim(substring(in_db_version, 1, locate(stopper, in_db_version)-1)));
+	else
+		set string_version := (select in_db_version);
+	end if;
+	return string_version;
+end
+
+Create Procedure db_ims.update_user_password (email_address_in varchar(50), new_password varchar(50))
+begin
+	declare new_salt varchar(10);
+	declare sp_user_id varchar(32);
+
+	set new_salt := (select db_ims.generate_random_string());
+	set sp_user_id := (select user_id from db_ims.email_address where email_address = email_address_in);
+
+	update db_ims.users
+	set password = new_password, salt_password = new_salt
+	where user_id = sp_user_id;
+	
+end
+
+
+create procedure db_ims.sp_create_default_job_configuration (in_db_con_string varchar(100))
+begin
+	declare get_platform_info varchar(2);
+	set get_platform_info := (select db_platform from db_ims.db_connection_details where db_con_string_id = in_db_con_string);
+
+	
+		insert into db_ims.db_ims_job_configuration (job_id, db_con_string_id, platform, job_no, board_category, category, sub_category, is_sp, TSQL, sp_parameter, installation_status, create_date, frequency_hr, frequency_min, frequency_sec, week_monday, week_tuesday, week_wednesday, week_thursday, week_friday, week_saturday, week_sunday, set_time, week_daily, occur_once)
+		select
+		concat(in_db_con_string,'-JN',REPEAT('0', 2-length(cast(job_no as varchar(2)))),cast(job_no as varchar(2))),
+		in_db_con_string,
+		get_platform_info,
+		job_no,
+		board_category,
+		category,
+		sub_category,
+		is_sp,
+		TSQL,
+		sp_parameter,
+		installation_status,
+		create_date,
+		frequency_hr, 
+		frequency_min, 
+		frequency_sec, 
+		week_monday, 
+		week_tuesday, 
+		week_wednesday, 
+		week_thursday, 
+		week_friday, 
+		week_saturday, 
+		week_sunday, 
+		set_time, 
+		week_daily,  
+		occur_once
+		from (
+		select
+		row_number() over (partition by str.platform) as job_no,
+		gbc.board_category,
+		str.category,
+		str.sub_category,
+		case when sp_name is not null then 'Y' else 'N' end as is_sp,
+		coalesce(sp_name, query) as TSQL,
+		case 
+		when sp_name = 'pyodbc' or sp_name is null then 'I'
+		else 'N' end as installation_status,
+		case
+		when sp_name = 'pyodbc' or sp_name is null then now()
+		else NULL end as create_date,
+		sp_parameter,
+		frequency_hr, 
+		frequency_min, 
+		frequency_sec, 
+		week_monday, 
+		week_tuesday, 
+		week_wednesday, 
+		week_thursday, 
+		week_friday, 
+		week_saturday, 
+		week_sunday, 
+		week_daily, 
+		set_time,  
+		occur_once
+		from db_ims.sp_table_reference str
+		left join db_ims.generic_broad_category gbc on str.category = gbc.smaller_category
+		left join db_ims.defeault_configuration_tbl dct on dct.platform = str.platform and gbc.board_category = dct.board_category and str.category = dct.category and coalesce(str.sub_category,'') = coalesce(dct.sub_category,'')
+		where str.platform = get_platform_info) x;
+end
+
+create function db_ims.get_unchecked_installation_status (
+in_db_connection_string varchar(50)
+)
+RETURNS varchar(50)
+deterministic
+begin
+	declare output_job_id varchar(50);
+
+	set output_job_id := (select distinct TSQL from db_ims.db_ims_job_configuration where db_con_string_id = in_db_connection_string and installation_status = 'N' and is_sp ='Y' order by job_no asc limit 1);
+
+	return output_job_id;
+end
+
+
+create procedure db_ims.alter_job_installation_status (
+	in_db_con_string_id varchar(50),
+	in_tsql varchar(50),
+	change_status varchar(1)
+)
+begin
+	if change_status = 'A' or change_status = 'N' then
+		Update db_ims.db_ims_job_configuration
+		set installation_status = change_status
+		where TSQL = in_tsql and is_sp = 'Y' and db_con_string_id = in_db_con_string_id;
+	else
+		Update db_ims.db_ims_job_configuration
+		set installation_status = 'I', create_date = now()
+		where TSQL = in_tsql and is_sp = 'Y' and db_con_string_id = in_db_con_string_id;
+	end if;
+end
+
+create function db_ims.get_number_of_unchecked_status (
+in_db_connection_string varchar(50)
+)
+RETURNS varchar(50)
+deterministic
+begin
+	declare no_of_unchecked int;
+
+	set no_of_unchecked := (select count(distinct TSQL) from db_ims.db_ims_job_configuration where db_con_string_id = in_db_connection_string and installation_status = 'N' and is_sp ='Y');
+
+	return no_of_unchecked;
+end
+
+
+create  function db_ims.fx_decipher_datastring (datastring varchar(50), look_up_value varchar(5))
+returns varchar(100)
+deterministic
+begin
+	declare data_string_con varchar(25);
+	
+	if look_up_value = 'SCHED' then
+		return  substring(datastring,1,2);
+	elseif look_up_value = 'TIME' then
+		return substring(datastring, locate('{',datastring) + 1,  locate('}',datastring) - locate('{',datastring) - 1);
+	elseif look_up_value = 'OCCUR' then
+		if (locate('+', datastring) > 0) then
+			return substring(datastring, locate('+',datastring) + 2, locate(']',datastring) - locate('[',datastring)-1);
+		else 
+			return 
+			case 
+			when substring(datastring, locate('}',datastring) + 1,  locate('-',datastring) - locate('}',datastring)) = 'WK-' then 'OD'
+			else substring(datastring, locate('}',datastring) + 1,  locate('-',datastring) - locate('}',datastring) - 1) end;
+		end if;
+	end if;
+end
+
+
+
+create procedure db_ims.sp_convert_occurance_str_to_tbl (
+	in_job_id varchar(40),
+	in_occurance_string varchar(20)
+)
+begin
+	declare cur_n int;
+	drop temporary table if exists db_ims.cte_tbl_occur;
+	drop temporary table if exists sp_convert_occur_tbl;
+	create temporary table db_ims.cte_tbl_occur(
+		n int,
+		value int
+	);
+	
+	create temporary table db_ims.sp_convert_occur_tbl(
+		job_id varchar(40),
+		week_monday varchar(1),
+		week_tuesday varchar(1),
+		week_wednesday varchar(1),
+		week_thursday varchar(1),
+		week_friday varchar(1),
+		week_saturday varchar(1),
+		week_sunday varchar(1)
+	);
+	
+	
+	insert into db_ims.cte_tbl_occur(n, value)
+	select 1, SUBSTRING_INDEX(in_occurance_string, ',', 1);
+	
+	set cur_n := 1;
+	
+	WHILE cur_n < 8 DO
+    	insert into db_ims.cte_tbl_occur(n, value)
+    	select n + 1, SUBSTRING_INDEX(SUBSTRING_INDEX(in_occurance_string, ',', n + 1), ',' , -1) from db_ims.cte_tbl_occur where n = cur_n;
+    	set cur_n = cur_n + 1;
+	END while;
+	
+	insert db_ims.sp_convert_occur_tbl (job_id, week_monday, week_tuesday, week_wednesday, week_thursday, week_friday, week_saturday, week_sunday)
+	select
+	in_job_id,
+	max(case when day_value = 'MONDAY' then check_ref else NULL end) week_monday,
+	max(case when day_value = 'TUESDAY' then check_ref else NULL end) week_tuesday,
+	max(case when day_value = 'WEDNESDAY' then check_ref else NULL end) week_wednesday,
+	max(case when day_value = 'THURSDAY' then check_ref else NULL end) week_thursday,
+	max(case when day_value = 'FRIDAY' then check_ref else NULL end) week_friday,
+	max(case when day_value = 'SATURDAY' then check_ref else NULL end) week_saturday,
+	max(case when day_value = 'SUNDAY' then check_ref else NULL end) week_sunday
+	from (
+	select
+	A.day_value,
+	case 
+	when B.value is null then 'N'
+	else A.check_value end as check_ref
+	from db_ims.occurance_table_reference A left join
+	(select distinct value from db_ims.cte_tbl_occur) B on A.ref_val = B.value
+	order by A.ref_val asc) x;
+
+end
+
+
+create function db_ims.fx_check_time_format (in_time_string varchar(100), string_type varchar(2))
+returns boolean
+deterministic
+begin
+	declare chk_format int;
+
+	 if string_type = 'FQ' then 
+	 	set chk_format := (select
+							in_time_string REGEXP '^[0-2][0-9]H[0-5][0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-5][0-9]M[0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-9]M[0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]M[0-9]S$' 
+							or in_time_string REGEXP '^[0-9]H[0-9]M[0-5][0-9]S$' 
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]M[0-9]S$'
+							
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9][0-9]M$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]M$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]M$'
+							or in_time_string REGEXP '^[0-9]H[0-9]M$'
+							
+							or in_time_string REGEXP '^[0-5][0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-5][0-9]M[0-9]S$'
+							or in_time_string REGEXP '^[0-9]M[0-9]S$'
+							
+							or in_time_string REGEXP '^[0-2][0-9]H[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-9]S$'
+							or in_time_string REGEXP '^[0-9][HMS]$'
+							or in_time_string REGEXP '^[0-5][0-9][HMS]$');
+		elseif string_type = 'ST' then 
+			set chk_format := (select
+							in_time_string REGEXP '^[0-2][0-9]H[0-5][0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]M[0-5][0-9]S$'
+							or in_time_string REGEXP '^[0-2][0-9]H[0-5][0-9]M[0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-9]M[0-9]S$'
+							or in_time_string REGEXP '^[0-9]H[0-5][0-9]M[0-9]S$' 
+							or in_time_string REGEXP '^[0-9]H[0-9]M[0-5][0-9]S$' 
+							or in_time_string REGEXP '^[0-2][0-9]H[0-9]M[0-9]S$');
+			
+		end if;
+	
+	return chk_format;
+end
+
+create function db_ims.fx_extract_number_from_string (
+	in_time_string varchar(100),
+	in_part varchar(1),
+	is_set_time boolean
+)
+returns int
+deterministic
+begin
+	declare string_check int;
+	declare time_int int;
+	
+	set string_check:= (select locate(in_part,in_time_string));
+	set time_int := (select 
+					case when string_check > 0 and substring(in_time_string, string_check-2,2) REGEXP '^[0-9]+$'
+					then cast(substring(in_time_string, string_check-2,2) as int)
+					when string_check > 0 and substring(in_time_string, string_check-1,1) REGEXP '^[0-9]+$'
+					then cast(substring(in_time_string, string_check-1,1) as int)
+					else null end);
+				
+	if is_set_time = 1 and in_part = 'H' and time_int > 23 then
+		set time_int = 23;
+	elseif is_set_time = 1 and in_part = 'M' and time_int > 59 then
+		set time_int = 59;
+	elseif is_set_time = 1 and in_part = 'S' and time_int > 59 then
+		set time_int = 59;
+	end if;
+
+	return time_int;
+
+end
+
+create function db_ims.fx_convert_string_to_time (
+	in_time_string varchar(100)
+)
+returns time
+deterministic
+begin
+	declare hr_string varchar(10);
+	declare min_string varchar(10);
+	declare sec_string varchar(10);
+	declare time_value time;
+	
+	set hr_string := (select cast(coalesce(db_ims.fx_extract_number_from_string(in_time_string, 'H', 1),0) as varchar(2)));
+	set hr_string := concat(REPEAT('0', 2 - length(hr_string)),hr_string);
+
+	set min_string := (select cast(coalesce(db_ims.fx_extract_number_from_string(in_time_string, 'M', 1),0) as varchar(2)));
+	set min_string := concat(REPEAT('0', 2 - length(min_string)),min_string);
+
+	set sec_string := (select cast(coalesce(db_ims.fx_extract_number_from_string(in_time_string, 'S', 1),0) as varchar(2)));
+	set sec_string := concat(REPEAT('0', 2 - length(sec_string)),sec_string);
+
+	set time_value := (select STR_TO_DATE(concat(hr_string, min_string, sec_string), '%H%i%s'));
+	return time_value;
+
+end
+
+
+create procedure db_ims.sp_convert_time_str_to_tbl (
+	in in_job_id varchar(40),
+	in in_time_str_string varchar(20),
+	in in_string_type varchar(2),
+	out output_status varchar(1)
+)
+begin
+	declare chk_time_format int;
+	set chk_time_format := (select db_ims.fx_check_time_format (in_time_str_string, in_string_type));
+
+	drop temporary table if exists db_ims.sp_time_table;
+	create temporary table db_ims.sp_time_table(
+		job_id varchar(40),
+		frequency_hr int,
+		frequency_min int,
+		frequency_sec int,
+		set_time time
+	);
+
+	
+	if (chk_time_format = 1 and in_string_type = 'FQ') then 
+		insert into db_ims.sp_time_table (job_id, frequency_hr, frequency_min, frequency_sec, set_time)
+		select in_job_id, 
+		coalesce(db_ims.fx_extract_number_from_string(in_time_str_string, 'H', 0),0),
+		coalesce(db_ims.fx_extract_number_from_string(in_time_str_string, 'M', 0),0),
+		coalesce(db_ims.fx_extract_number_from_string(in_time_str_string, 'S', 0),0),
+		null;
+		
+		set output_status := 'S';
+	elseif (chk_time_format = 1 and in_string_type = 'ST') then 
+		insert into db_ims.sp_time_table (job_id, frequency_hr, frequency_min, frequency_sec, set_time)
+		select in_job_id, 
+		0,
+		0,
+		0,
+		db_ims.fx_convert_string_to_time (in_time_str_string);
+	
+		set output_status := 'S';
+	else
+		set output_status := 'F';
+	end if;
+end
+
+
+create procedure db_ims.sp_update_job_configuration (
+	in_job_id varchar(40),
+	data_string varchar(40)
+)
+begin
+	declare sched_part varchar(2);
+	declare time_part varchar(14);
+	declare occur_part varchar(14);
+	declare check_time varchar(1);
+	declare chk_category varchar(50);
+	declare chk_db_con_string_id varchar(50);
+
+	set sched_part := (select db_ims.fx_decipher_datastring(data_string, 'SCHED'));
+	set time_part := (select db_ims.fx_decipher_datastring(data_string, 'TIME'));
+	set occur_part := (select db_ims.fx_decipher_datastring(data_string, 'OCCUR'));
+	set chk_category := (select category from db_ims.db_ims_job_configuration where job_id = in_job_id);
+	set chk_db_con_string_id := (select distinct db_con_string_id from db_ims.db_ims_job_configuration where job_id = in_job_id);
+
+	drop temporary table if exists db_ims.update_config_tbl;
+	create temporary table db_ims.update_config_tbl(
+		job_id varchar(40),
+		frequency_hr int,
+		frequency_min int,
+		frequency_sec int,
+		week_monday varchar(1) not NUll,
+		week_tuesday varchar(1) not NUll,
+		week_wednesday varchar(1) not NUll,
+		week_thursday varchar(1) not NUll,
+		week_friday varchar(1) not NUll,
+		week_saturday varchar(1) not NUll,
+		week_sunday varchar(1) not NUll,
+		set_time time,
+		week_daily varchar(1) not null,
+		occur_once varchar(1) not null
+	);
+
+	if sched_part = 'ON' then
+		insert into update_config_tbl (
+			job_id,
+			frequency_hr,
+			frequency_min,
+			frequency_sec,
+			week_monday,
+			week_tuesday,
+			week_wednesday,
+			week_thursday,
+			week_friday,
+			week_saturday,
+			week_sunday,
+			set_time,
+			week_daily,
+			occur_once)
+		select
+			in_job_id,
+			0,
+			0,
+			0,
+			'N',
+			'N',
+			'N',
+			'N',
+			'N',
+			'N',
+			'N',
+			null,
+			'N',
+			'Y';
+		elseif sched_part = 'FQ' and occur_part = 'OD' then
+			call db_ims.sp_convert_time_str_to_tbl(in_job_id, time_part, sched_part, check_time);
+			if check_time = 'S' then 
+				insert into update_config_tbl (
+				job_id,
+				frequency_hr,
+				frequency_min,
+				frequency_sec,
+				week_monday,
+				week_tuesday,
+				week_wednesday,
+				week_thursday,
+				week_friday,
+				week_saturday,
+				week_sunday,
+				set_time,
+				week_daily,
+				occur_once)
+				select
+				in_job_id,
+				frequency_hr,
+				frequency_min,
+				frequency_sec,
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				set_time,
+				'Y',
+				'N'
+				from db_ims.sp_time_table where job_id = in_job_id;
+			end if;
+		elseif sched_part = 'FQ' and occur_part != 'OD' then
+			call db_ims.sp_convert_time_str_to_tbl(in_job_id, time_part, sched_part, check_time);
+			call db_ims.sp_convert_occurance_str_to_tbl(in_job_id, occur_part);
+			if check_time = 'S' then 
+				insert into update_config_tbl (
+					job_id,
+					frequency_hr,
+					frequency_min,
+					frequency_sec,
+					week_monday,
+					week_tuesday,
+					week_wednesday,
+					week_thursday,
+					week_friday,
+					week_saturday,
+					week_sunday,
+					set_time,
+					week_daily,
+					occur_once)
+					select
+					in_job_id,
+					frequency_hr,
+					frequency_min,
+					frequency_sec,
+					week_monday,
+					week_tuesday,
+					week_wednesday,
+					week_thursday,
+					week_friday,
+					week_saturday,
+					week_sunday,
+					set_time,
+					'N',
+					'N'
+					from db_ims.sp_time_table A
+					inner join db_ims.sp_convert_occur_tbl B on A.job_id = B.Job_id and A.job_id = in_job_id;
+			end if;
+		elseif sched_part = 'ST' and occur_part = 'OD' then
+			call db_ims.sp_convert_time_str_to_tbl(in_job_id, time_part, sched_part, check_time);
+			if check_time = 'S' then 
+				insert into update_config_tbl (
+				job_id,
+				frequency_hr,
+				frequency_min,
+				frequency_sec,
+				week_monday,
+				week_tuesday,
+				week_wednesday,
+				week_thursday,
+				week_friday,
+				week_saturday,
+				week_sunday,
+				set_time,
+				week_daily,
+				occur_once)
+				select
+				in_job_id,
+				frequency_hr,
+				frequency_min,
+				frequency_sec,
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				'N',
+				set_time,
+				'Y',
+				'N'
+				from db_ims.sp_time_table where job_id = in_job_id;
+			end if;
+		elseif sched_part = 'ST' and occur_part != 'OD' then
+			call db_ims.sp_convert_time_str_to_tbl(in_job_id, time_part, sched_part, check_time);
+			call db_ims.sp_convert_occurance_str_to_tbl(in_job_id, occur_part);
+			if check_time = 'S' then 
+				insert into update_config_tbl (
+					job_id,
+					frequency_hr,
+					frequency_min,
+					frequency_sec,
+					week_monday,
+					week_tuesday,
+					week_wednesday,
+					week_thursday,
+					week_friday,
+					week_saturday,
+					week_sunday,
+					set_time,
+					week_daily,
+					occur_once)
+					select
+					in_job_id,
+					frequency_hr,
+					frequency_min,
+					frequency_sec,
+					week_monday,
+					week_tuesday,
+					week_wednesday,
+					week_thursday,
+					week_friday,
+					week_saturday,
+					week_sunday,
+					set_time,
+					'N',
+					'N'
+					from db_ims.sp_time_table A
+					inner join db_ims.sp_convert_occur_tbl B on A.job_id = B.Job_id and A.job_id = in_job_id;
+			end if;
+		end if;
+	if chk_category = 'uptime' then 
+		update db_ims.db_ims_job_configuration A join db_ims.update_config_tbl B
+		on A.job_id in (select job_id from db_ims.db_ims_job_configuration where db_con_string_id = chk_db_con_string_id and category = chk_category)
+		set 
+		A.frequency_hr = B.frequency_hr,
+		A.frequency_min = B.frequency_min,
+		A.frequency_sec = B.frequency_sec,
+		A.week_monday = B.week_monday,
+		A.week_tuesday = B.week_tuesday,
+		A.week_wednesday = B.week_wednesday,
+		A.week_thursday = B.week_thursday,
+		A.week_friday = B.week_friday,
+		A.week_saturday = B.week_saturday,
+		A.week_sunday = B.week_sunday,
+		A.set_time = B.set_time,
+		A.week_daily = B.week_daily,
+		A.occur_once = B.occur_once,
+		modification_date = now()
+		where A.job_id in (select job_id from db_ims.db_ims_job_configuration where db_con_string_id = chk_db_con_string_id and category = chk_category);
+	else
+		update db_ims.db_ims_job_configuration A join db_ims.update_config_tbl B
+		on A.job_id = B.job_id
+		set 
+		A.frequency_hr = B.frequency_hr,
+		A.frequency_min = B.frequency_min,
+		A.frequency_sec = B.frequency_sec,
+		A.week_monday = B.week_monday,
+		A.week_tuesday = B.week_tuesday,
+		A.week_wednesday = B.week_wednesday,
+		A.week_thursday = B.week_thursday,
+		A.week_friday = B.week_friday,
+		A.week_saturday = B.week_saturday,
+		A.week_sunday = B.week_sunday,
+		A.set_time = B.set_time,
+		A.week_daily = B.week_daily,
+		A.occur_once = B.occur_once,
+		modification_date = now()
+		where A.job_id = B.job_id;
+	end if;
+end
+
+create procedure db_ims.update_last_run (
+	in_job_id varchar(40)
+)
+begin
+	declare chk_category varchar(50);
+	declare chk_db_con_string_id varchar(50);
+	
+	set chk_category := (select category from db_ims.db_ims_job_configuration where job_id = in_job_id);
+	set chk_db_con_string_id := (select distinct db_con_string_id from db_ims.db_ims_job_configuration where job_id = in_job_id);
+
+	if chk_category = 'uptime' then 
+		update db_ims.db_ims_job_configuration
+		set last_run = now()
+		where job_id in (select job_id from db_ims.db_ims_job_configuration where db_con_string_id = chk_db_con_string_id and category = chk_category);
+	
+	else
+		update db_ims.db_ims_job_configuration
+		set last_run = now()
+		where job_id = in_job_id;
+	end if;
+
+	delete from db_ims.db_ims_automated_run_queue where job_id = in_job_id;
+end
+
+create procedure db_ims.sp_populate_automated_tbl ()
+begin
+	declare inter_no int;
+	set inter_no := (select case
+						when coalesce(max(iter_no),0) + 1 = 1 then 1
+						when coalesce(max(iter_no),0) + 1 > 3 then 1
+						else coalesce(max(iter_no),0) + 1 end
+						from db_ims.db_ims_automated_run_queue);
+					
+	insert into db_ims.db_ims_automated_run_queue (q_no, iter_no, job_id, last_run, next_run)
+	select row_number() over (), 
+	inter_no, 
+	a.job_id, 
+	a.last_run,
+	a.next_run
+	from db_ims.vw_job_reference_tbl_filtered_view a 
+	left join db_ims.db_ims_automated_run_queue B on a.job_id = b.job_id
+	where b.job_id is null;
+end
+
+create function db_ims.fx_get_priority_queue ()
+returns varchar(40)
+deterministic
+begin
+	declare min_iter_no int;
+	declare min_q_no int;
+	declare output_param varchar(40);
+
+	set min_iter_no := (select min(iter_no) from db_ims.db_ims_automated_run_queue);
+	set min_q_no := (select min(q_no) from db_ims.db_ims_automated_run_queue where iter_no = min_iter_no group by iter_no);
+	set output_param := (select job_id from db_ims.db_ims_automated_run_queue where q_no = min_q_no and iter_no = min_iter_no);
+
+	return output_param;
+	
+end
+
+create function db_ims.generate_notification_id (
+	in_user_id varchar(32)
+)
+returns varchar(50)
+deterministic
+begin
+	declare id_cnt bigint;
+	declare nid varchar(50);
+	set id_cnt := (select count(1) from db_ims.user_notifications where user_id = in_user_id) + 1;
+	set nid := (select concat(substring(in_user_id,1,12), 'NT', UPPER(LEFT(MD5(RAND()),4)), cast(round((rand())*1000,0) as varchar(10)), 'N', repeat('0', 10 - length(cast(id_cnt as varchar(16)))), cast(id_cnt as varchar(10))));
+	return nid;
+end
+
+
+create function db_ims.get_user_id_from_con_string (
+	in_db_con_string varchar(32)
+)
+returns varchar(32)
+deterministic
+begin
+	declare get_user_id varchar(32);
+	set get_user_id := (select user_id from db_ims.vw_db_connection_details_complete where db_con_string_id = in_db_con_string);
+	return get_user_id;
+end
+
+
+create procedure db_ims.sp_update_user_name (in_email_address varchar(50) , in_user_name varchar(50))
+begin
+	declare sp_user_id varchar(32);
+	set sp_user_id := (select user_id from db_ims.email_address where email_address = in_email_address);
+	
+	update db_ims.users set username = in_user_name where user_id = sp_user_id;
+end
+
+
+Create Procedure db_ims.archive_connection_details (
+	in_db_con_string_id varchar(20)
+)
+begin 
+	declare sp_platform varchar(2);
+	set sp_platform := (select db_platform from db_ims.db_connection_details where db_con_string_id = in_db_con_string_id);
+
+	if sp_platform = 'MS' then
+		delete from db_ims.sql_database_uptime_current_logs where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.db_connection_log where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_sp_installed_table where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_active_sessions where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_breakdown_of_connections where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_backup_details where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_backup_growth_rate where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_database_growth_rate where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_database_and_logs_capacity where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_memory_capacity where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_check_agent where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_job_status  where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_job_history where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.sql_sp_execution_history where db_con_string_id = in_db_con_string_id;
+	
+	
+	elseif sp_platform = 'PG' then
+		delete from db_ims.pg_db_connection_log where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_db_session  where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_db_query_logs where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_cache_hit_ratio where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_table_memory where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_vacuum where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_cache_breakdown where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_db_memory where db_con_string_id = in_db_con_string_id;
+		delete from db_ims.pg_inheritance_map where db_con_string_id = in_db_con_string_id;
+	
+	end if;
+	delete from  db_ims.error_logs where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.db_status where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.db_uptime_logs where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.db_ims_job_configuration where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.py_db_query_log_details where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.db_ims_job_configuration where db_con_string_id = in_db_con_string_id;
+	delete from db_ims.user_notifications where db_con_string_id = in_db_con_string_id;
+
+	insert into  db_ims.db_connection_details_archived (db_con_string_id, user_id, host_ip, port, db_username, db_password, db_platform, timestamp)
+	select db_con_string_id, user_id, host_ip, port, db_username, db_password, db_platform, now() from db_ims.db_connection_details where db_con_string_id = in_db_con_string_id;
+	
+	delete from db_ims.db_connection_details where db_con_string_id = in_db_con_string_id;
+	
+end
+
+Create Procedure db_ims.or_record_connections (
+	in_db_con_string_id varchar(20),
+	in_utilization bigint,
+	in_max_connections bigint
+)
+begin
+	insert into db_ims.or_session_tbl(db_con_string_id, current_utilization, max_connections, last_time_check)
+	select in_db_con_string_id, in_utilization, in_max_connections, now();
+	
+end
+
+Create Procedure db_ims.or_instance_information (
+	in_db_con_string_id varchar(20),
+	in_instance_name varchar(100),
+	in_host_name varchar(100),
+	in_instance_status varchar(100),
+	in_database_status varchar(100),
+	in_state varchar(100),
+	in_logins varchar(100)
+)
+begin
+	delete from db_ims.or_instance_details where db_con_string_id = in_db_con_string_id;
+
+	insert into db_ims.or_instance_details (db_con_string_id, instance_name, host_name, instance_status, database_status, state, logins,  last_time_check)
+	select in_db_con_string_id, in_instance_name, in_host_name, in_instance_status, in_database_status, in_state, in_logins,  now();
+	
+end
+
+## Added SP 5/19/2022
+create function db_ims.get_user_name (in_user_id varchar(32))
+RETURNS varchar(50)
+deterministic
+begin
+	declare user_name_sp varchar(50);
+	set  user_name_sp := (select username from db_ims.users where in_user_id = 'fc8145a3d5da11ec8b9ddc1ba188314a');
+	return user_name_sp;
+end
+
+## Added SP 5/21/2022
+create procedure db_ims.sp_read_all (in_user_id varchar(32))
+begin
+	insert into db_ims.read_notification (notification_id, user_id)
+	select
+	a.notification_id,
+	a.user_id 
+	from db_ims.user_notifications a 
+	left join db_ims.read_notification b on a.notification_id = b.notification_id and a.user_id = b.user_id
+	where a.user_id = in_user_id and b.notification_id is null;
+end
